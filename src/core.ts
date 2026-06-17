@@ -16,6 +16,8 @@ export type SearchHit = {
   lineEnd: number;
   score: number;
   snippet: string;
+  matchLine: number;
+  matchText: string;
 };
 
 export type FetchResult = {
@@ -184,7 +186,7 @@ function lineScore(line: string, queryTerms: string[]): number {
   return score;
 }
 
-type Region = { start: number; end: number; score: number };
+type Region = { start: number; end: number; score: number; anchorIndex: number; anchorScore: number };
 
 function mergeRegions(
   matches: { index: number; score: number }[],
@@ -200,11 +202,15 @@ function mergeRegions(
     if (current && start <= current.end + 1 && currentLineCount < MAX_REGION_LINES) {
       current.end = Math.max(current.end, end);
       current.score += match.score;
+      if (match.score > current.anchorScore) {
+        current.anchorScore = match.score;
+        current.anchorIndex = match.index;
+      }
     } else {
       if (current) {
         regions.push(current);
       }
-      current = { start, end, score: match.score };
+      current = { start, end, score: match.score, anchorIndex: match.index, anchorScore: match.score };
     }
   }
   if (current) {
@@ -259,6 +265,8 @@ export async function searchMemory(
         lineEnd: region.end + 1,
         score: distinctTerms * 100 + Math.min(region.score, 50),
         snippet,
+        matchLine: region.anchorIndex + 1,
+        matchText: (lines[region.anchorIndex] ?? "").trim(),
       });
     }
   }
@@ -356,16 +364,16 @@ export async function answerFromMemory(
       continue;
     }
     const sentences = extractSentences(hit.snippet, confidenceTerms);
-    const text = sentences[0] || hit.snippet.split(/\n+/g).find(Boolean) || "";
+    const text = hit.matchText || sentences[0] || hit.snippet.split(/\n+/g).find(Boolean) || "";
     if (text.trim()) {
-      points.push(`- ${text.trim()} [${hit.path}:${hit.lineStart}]`);
+      points.push(`- ${text.trim()} [${hit.path}:${hit.matchLine}]`);
     }
   }
 
   return {
     answer: points.length > 0
       ? points.join("\n")
-      : `Found cited memory, but no concise extractive answer could be formed. Start with ${hits[0]?.path}:${hits[0]?.lineStart}.`,
+      : `Found cited memory, but no concise extractive answer could be formed. Start with ${hits[0]?.path}:${hits[0]?.matchLine ?? hits[0]?.lineStart}.`,
     citations: hits,
     known: true,
   };

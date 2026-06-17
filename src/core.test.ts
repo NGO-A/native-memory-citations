@@ -28,6 +28,9 @@ describe("native memory citations core", () => {
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0]?.path).toBe("memory/2026-06-16.md");
     expect(hits[0]?.lineStart).toBeGreaterThan(0);
+    expect(hits[0]?.matchLine).toBeGreaterThanOrEqual(hits[0]?.lineStart ?? 0);
+    expect(hits[0]?.matchLine).toBeLessThanOrEqual(hits[0]?.lineEnd ?? 0);
+    expect(hits[0]?.matchText).toContain("native memory");
   });
 
   it("merges adjacent matches into a single region instead of overlapping hits", async () => {
@@ -69,7 +72,8 @@ describe("native memory citations core", () => {
     const workspace = await fixtureWorkspace();
     const result = await answerFromMemory("What should the plugin return?", { config: { workspace } });
     expect(result.known).toBe(true);
-    expect(result.answer).toContain("[memory/2026-06-16.md:");
+    expect(result.answer).toContain("[memory/2026-06-16.md:4]");
+    expect(result.answer).toContain("The plugin should return source citations");
   });
 
   it("extracts the highest-signal line from a cited region", async () => {
