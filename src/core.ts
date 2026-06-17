@@ -1,4 +1,5 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -18,6 +19,7 @@ export type SearchHit = {
   snippet: string;
   matchLine: number;
   matchText: string;
+  sha256: string;
 };
 
 export type FetchResult = {
@@ -27,6 +29,9 @@ export type FetchResult = {
   lineEnd: number;
   citation: string;
   content: string;
+  sha256: string;
+  stale?: boolean;
+  staleMessage?: string;
 };
 
 export type AnswerResult = {
@@ -106,7 +111,7 @@ const STOPWORDS = new Set([
   "been",
 ]);
 
-type CachedFile = { mtimeMs: number; size: number; lines: string[] };
+type CachedFile = { mtimeMs: number; size: number; lines: string[]; sha256: string };
 const fileCache = new Map<string, CachedFile>();
 
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -181,6 +186,10 @@ function isTextFile(file: string): boolean {
   return TEXT_EXTENSIONS.has(path.extname(file));
 }
 
+function sha256Text(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
 async function collectFiles(root: string, logger?: MemoryLogger): Promise<string[]> {
   const info = await stat(root).catch(() => null);
   if (!info) {
@@ -250,7 +259,7 @@ function scoreLine(line: string, matchers: Matcher[]): number {
   return score;
 }
 
-async function loadLines(file: string, maxFileBytes: number, logger?: MemoryLogger): Promise<string[] | null> {
+async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogger): Promise<CachedFile | null> {
   const info = await stat(file).catch(() => null);
   if (!info || !info.isFile()) {
     fileCache.delete(file);
@@ -265,7 +274,7 @@ async function loadLines(file: string, maxFileBytes: number, logger?: MemoryLogg
   if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) {
     fileCache.delete(file);
     fileCache.set(file, cached);
-    return cached.lines;
+    return cached;
   }
   const text = await readFile(file, "utf8").catch(() => "");
   if (!text.trim()) {
@@ -273,14 +282,15 @@ async function loadLines(file: string, maxFileBytes: number, logger?: MemoryLogg
     return null;
   }
   const lines = text.split(/\r?\n/g);
-  fileCache.set(file, { mtimeMs: info.mtimeMs, size: info.size, lines });
+  const loaded = { mtimeMs: info.mtimeMs, size: info.size, lines, sha256: sha256Text(text) };
+  fileCache.set(file, loaded);
   if (fileCache.size > FILE_CACHE_MAX) {
     const oldest = fileCache.keys().next().value;
     if (oldest !== undefined) {
       fileCache.delete(oldest);
     }
   }
-  return lines;
+  return loaded;
 }
 
 type Region = { start: number; end: number; score: number; anchorIndex: number; anchorScore: number };
@@ -344,10 +354,11 @@ export async function searchMemory(
     const batch = files.slice(i, i + SCAN_CONCURRENCY);
     const batchHits = await Promise.all(batch.map(async (file) => {
       options.signal?.throwIfAborted();
-      const lines = await loadLines(file, maxFileBytes, options.logger);
-      if (!lines) {
+      const loaded = await loadFile(file, maxFileBytes, options.logger);
+      if (!loaded) {
         return [] as SearchHit[];
       }
+      const { lines, sha256 } = loaded;
       const matches: { index: number; score: number }[] = [];
       for (let index = 0; index < lines.length; index += 1) {
         if (index % 512 === 0) {
@@ -374,6 +385,7 @@ export async function searchMemory(
           snippet,
           matchLine: region.anchorIndex + 1,
           matchText: (lines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim(),
+          sha256,
         } satisfies SearchHit;
       });
     }));
@@ -390,7 +402,14 @@ export async function searchMemory(
 }
 
 export async function fetchMemorySource(
-  input: { sourceId?: string; filePath?: string; lineStart?: number; lineEnd?: number; maxChars?: number },
+  input: {
+    sourceId?: string;
+    filePath?: string;
+    lineStart?: number;
+    lineEnd?: number;
+    maxChars?: number;
+    expectedSha256?: string;
+  },
   config: PluginConfig = {},
 ): Promise<FetchResult> {
   const requested = input.sourceId || input.filePath;
@@ -414,6 +433,7 @@ export async function fetchMemorySource(
     throw new Error(`Memory file exceeds maxFileBytes: ${sourceId}`);
   }
   const text = await readFile(file, "utf8");
+  const sha256 = sha256Text(text);
   const lines = text.split(/\r?\n/g);
   const requestedStart = Math.max(1, Math.floor(input.lineStart ?? 1));
   const lineStart = Math.min(lines.length, requestedStart);
@@ -421,6 +441,8 @@ export async function fetchMemorySource(
   const lineEnd = Math.min(lines.length, Math.max(lineStart, requestedEnd));
   const maxChars = clampInt(input.maxChars, DEFAULT_FETCH_CHARS, 256, MAX_FETCH_CHARS);
   const content = lines.slice(lineStart - 1, lineEnd).join("\n").slice(0, maxChars);
+  const expectedSha256 = input.expectedSha256?.trim().toLowerCase();
+  const stale = Boolean(expectedSha256 && expectedSha256 !== sha256);
   return {
     sourceId,
     path: sourceId,
@@ -428,6 +450,13 @@ export async function fetchMemorySource(
     lineEnd,
     citation: `${sourceId}:${lineStart}`,
     content,
+    sha256,
+    ...(stale
+      ? {
+          stale: true,
+          staleMessage: `Citation hash mismatch for ${sourceId}: expected ${expectedSha256}, current ${sha256}`,
+        }
+      : {}),
   };
 }
 

@@ -22,6 +22,10 @@ boundary is defined as follows:
   and non-text extensions are rejected.
 - Files larger than `maxFileBytes` (default 1 MiB) are skipped. Per-line and
   per-snippet output is length-capped.
+- Search and fetch results include a full-file SHA-256 hash. Callers can pass a
+  prior hash as `expectedSha256` to `native_memory_fetch`; if the file changed,
+  fetch marks the result stale so agents do not silently trust an old line
+  citation against new content.
 
 This plugin does not transmit memory contents anywhere; it only returns cited
 snippets to the calling agent. It performs no network I/O.

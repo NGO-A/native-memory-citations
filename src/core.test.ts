@@ -1,8 +1,13 @@
 import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { answerFromMemory, fetchMemorySource, searchMemory, toSafePath } from "./core.js";
+
+function sha256Text(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
 
 async function fixtureWorkspace(): Promise<string> {
   const workspace = await mkdtemp(path.join(tmpdir(), "native-memory-citations-"));
@@ -31,6 +36,16 @@ describe("native memory citations core", () => {
     expect(hits[0]?.matchLine).toBeGreaterThanOrEqual(hits[0]?.lineStart ?? 0);
     expect(hits[0]?.matchLine).toBeLessThanOrEqual(hits[0]?.lineEnd ?? 0);
     expect(hits[0]?.matchText).toContain("native memory");
+    expect(hits[0]?.sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("hashes the complete searched file content", async () => {
+    const workspace = await fixtureWorkspace();
+    const text = ["hash target alpha", "hash target beta", "hash target gamma"].join("\n");
+    await writeFile(path.join(workspace, "memory", "hash.md"), text);
+    const hits = await searchMemory("hash target", { config: { workspace }, contextLines: 0 });
+    const hit = hits.find((item) => item.path === "memory/hash.md");
+    expect(hit?.sha256).toBe(sha256Text(text));
   });
 
   it("merges adjacent matches into a single region instead of overlapping hits", async () => {
@@ -60,12 +75,58 @@ describe("native memory citations core", () => {
 
   it("fetches cited memory ranges", async () => {
     const workspace = await fixtureWorkspace();
+    const text = [
+      "# 2026-06-16",
+      "",
+      "- Mo decided Ninja should create a native memory citation plugin.",
+      "- The plugin should return source citations instead of unsupported claims.",
+      "- Native Memory Citations registers tools native_memory_search, native_memory_fetch, and native_memory_answer.",
+    ].join("\n");
     const result = await fetchMemorySource(
       { sourceId: "memory/2026-06-16.md", lineStart: 3, lineEnd: 4 },
       { workspace },
     );
     expect(result.content).toContain("native memory citation plugin");
     expect(result.citation).toBe("memory/2026-06-16.md:3");
+    expect(result.sha256).toBe(sha256Text(text));
+    expect(result.stale).toBeUndefined();
+  });
+
+  it("marks fetch results stale when the expected citation hash differs", async () => {
+    const workspace = await fixtureWorkspace();
+    const searchHits = await searchMemory("native memory citation plugin", { config: { workspace } });
+    const originalHash = searchHits[0]?.sha256 ?? "";
+    expect(originalHash).toMatch(/^[a-f0-9]{64}$/);
+    await writeFile(
+      path.join(workspace, "memory", "2026-06-16.md"),
+      [
+        "# 2026-06-16",
+        "",
+        "- Mo decided Ninja should create a native memory citation plugin.",
+        "- The plugin should return source citations after this file changed.",
+      ].join("\n"),
+    );
+    const result = await fetchMemorySource(
+      { sourceId: "memory/2026-06-16.md", lineStart: 3, lineEnd: 4, expectedSha256: originalHash },
+      { workspace },
+    );
+    expect(result.stale).toBe(true);
+    expect(result.staleMessage).toContain("Citation hash mismatch");
+    expect(result.staleMessage).toContain(originalHash);
+    expect(result.sha256).not.toBe(originalHash);
+  });
+
+  it("does not mark fetch results stale when the expected citation hash matches", async () => {
+    const workspace = await fixtureWorkspace();
+    const searchHits = await searchMemory("native memory citation plugin", { config: { workspace } });
+    const originalHash = searchHits[0]?.sha256 ?? "";
+    const result = await fetchMemorySource(
+      { sourceId: "memory/2026-06-16.md", lineStart: 3, lineEnd: 4, expectedSha256: originalHash },
+      { workspace },
+    );
+    expect(result.sha256).toBe(originalHash);
+    expect(result.stale).toBeUndefined();
+    expect(result.staleMessage).toBeUndefined();
   });
 
   it("fetches by filePath and clamps ranges", async () => {

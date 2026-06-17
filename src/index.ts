@@ -59,6 +59,11 @@ export default defineToolPlugin({
         lineStart: Type.Optional(Type.Number({ description: "1-based starting line." })),
         lineEnd: Type.Optional(Type.Number({ description: "1-based ending line." })),
         maxChars: Type.Optional(Type.Number({ description: "Maximum characters returned. Default 8000." })),
+        expectedSha256: Type.Optional(
+          Type.String({
+            description: "Optional SHA-256 from a prior citation. When it differs from the current file hash, the result is marked stale.",
+          }),
+        ),
       }),
       execute: async (input, config, context) => {
         context.signal?.throwIfAborted();

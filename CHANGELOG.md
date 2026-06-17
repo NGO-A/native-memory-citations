@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Added full-file SHA-256 hashes to search hits and fetch results so callers can
+  snapshot citation integrity.
+- Added optional `expectedSha256` support to `native_memory_fetch`; mismatched
+  hashes return a stale-citation warning on the fetch result.
+
 ### Fixed
 - Hardened `native_memory_fetch` so direct fetches cannot bypass search policy
   for hidden files/directories, non-text files, or files larger than

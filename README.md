@@ -5,8 +5,8 @@ Native means OpenClaw-native plugin, not native system memory.
 
 ## Tools
 
-- `native_memory_search`: search approved memory roots and return snippets with source paths and line numbers.
-- `native_memory_fetch`: fetch a cited source by `sourceId` or safe path.
+- `native_memory_search`: search approved memory roots and return snippets with source paths, line numbers, and file SHA-256 hashes.
+- `native_memory_fetch`: fetch a cited source by `sourceId` or safe path, optionally checking an expected citation hash.
 - `native_memory_answer`: build an extractive answer from cited memory snippets; says when no cited memory is found.
 
 ## Default Scope
@@ -68,6 +68,27 @@ A future version can add vector search while keeping the same public tool names.
 Search is keyword/substring based with an mtime/size line cache, bounded scan
 concurrency, and `AbortSignal` checks during scan.
 
+## Citation Integrity
+
+Search hits include `sha256`, computed from the full text file used for line
+splitting and citation line numbers. Fetch results include the current `sha256`
+for the same full-file content.
+
+To detect stale citations, pass the hash from a prior search hit:
+
+```json
+{
+  "sourceId": "memory/2026-06-17.md",
+  "lineStart": 12,
+  "lineEnd": 14,
+  "expectedSha256": "..."
+}
+```
+
+If the file changed, fetch still returns the current content for inspection, but
+marks the result with `stale: true` and a `staleMessage` explaining the hash
+mismatch.
+
 ## Install
 
 ```bash
@@ -84,7 +105,8 @@ See [SECURITY.md](./SECURITY.md): `allowedRoots` is trusted operator config;
 a symlink that escapes a root, and any caller-supplied fetch path, is untrusted
 and re-checked with `realpath`; symlinks found while walking directories during
 search are skipped. Fetch also rejects hidden path segments, non-text files, and
-files larger than `maxFileBytes`.
+files larger than `maxFileBytes`. Citation hashes let callers detect when a
+previous path-and-line citation may now point at changed content.
 
 ## Publish
 
