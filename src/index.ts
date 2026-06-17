@@ -46,7 +46,7 @@ export default defineToolPlugin({
       }),
       execute: async ({ query, limit, contextLines }, config, context) => {
         context.signal?.throwIfAborted();
-        return searchMemory(query, { limit, contextLines, config });
+        return searchMemory(query, { limit, contextLines, config, signal: context.signal, logger: context.api.logger });
       },
     }),
     tool({
@@ -75,7 +75,7 @@ export default defineToolPlugin({
       }),
       execute: async ({ query, limit }, config, context) => {
         context.signal?.throwIfAborted();
-        return answerFromMemory(query, { limit, config });
+        return answerFromMemory(query, { limit, config, signal: context.signal, logger: context.api.logger });
       },
     }),
   ],

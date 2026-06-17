@@ -68,6 +68,28 @@ describe("native memory citations core", () => {
     expect(result.citation).toBe("memory/2026-06-16.md:3");
   });
 
+  it("fetches by filePath and clamps ranges", async () => {
+    const workspace = await fixtureWorkspace();
+    const result = await fetchMemorySource(
+      { filePath: "memory/2026-06-16.md", lineStart: 99, lineEnd: 2 },
+      { workspace },
+    );
+    expect(result.lineStart).toBe(5);
+    expect(result.lineEnd).toBe(5);
+    expect(result.citation).toBe("memory/2026-06-16.md:5");
+    expect(result.content).toContain("native_memory_answer");
+  });
+
+  it("truncates fetched content at maxChars", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "long.md"), `${"long-content ".repeat(80)}\n`);
+    const result = await fetchMemorySource(
+      { sourceId: "memory/long.md", maxChars: 256 },
+      { workspace },
+    );
+    expect(result.content).toHaveLength(256);
+  });
+
   it("answers with citations when memory contains the fact", async () => {
     const workspace = await fixtureWorkspace();
     const result = await answerFromMemory("What should the plugin return?", { config: { workspace } });
@@ -89,6 +111,19 @@ describe("native memory citations core", () => {
     const result = await answerFromMemory("quantum chromodynamics lagrangian", { config: { workspace } });
     expect(result.known).toBe(false);
     expect(result.citations).toHaveLength(0);
+  });
+
+  it("returns no hits for stopword-only queries", async () => {
+    const workspace = await fixtureWorkspace();
+    const hits = await searchMemory("what should the", { config: { workspace } });
+    expect(hits).toHaveLength(0);
+  });
+
+  it("uses boundaries for short terms", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "google.md"), "google workspace note\n");
+    const hits = await searchMemory("go", { config: { workspace } });
+    expect(hits).toHaveLength(0);
   });
 
   it("requires multiple distinct query terms before claiming a cited answer", async () => {
@@ -115,6 +150,71 @@ describe("native memory citations core", () => {
     await writeFile(target, "secret material\n");
     await symlink(target, path.join(workspace, "memory", "leak.md"));
     await expect(fetchMemorySource({ sourceId: "memory/leak.md" }, { workspace })).rejects.toThrow(/symlink/);
+  });
+
+  it("skips symlinked files during search traversal", async () => {
+    const workspace = await fixtureWorkspace();
+    const target = path.join(workspace, "outside-symlink-search.md");
+    await writeFile(target, "symlink-only-search-token\n");
+    await symlink(target, path.join(workspace, "memory", "search-leak.md"));
+    const hits = await searchMemory("symlink-only-search-token", { config: { workspace } });
+    expect(hits).toHaveLength(0);
+  });
+
+  it("skips files exceeding maxFileBytes and logs the skip", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "oversized.md"), `${"oversized-token ".repeat(100)}\n`);
+    const warnings: string[] = [];
+    const hits = await searchMemory("oversized-token", {
+      config: { workspace, maxFileBytes: 1024 },
+      logger: { warn: (message) => warnings.push(message) },
+    });
+    expect(hits).toHaveLength(0);
+    expect(warnings.some((message) => message.includes("skipped oversized file"))).toBe(true);
+  });
+
+  it("orders higher scoring files first", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "alpha.md"), "alpha only\n");
+    await writeFile(path.join(workspace, "memory", "alpha-beta-gamma.md"), "alpha beta gamma\n");
+    const hits = await searchMemory("alpha beta gamma", { config: { workspace }, contextLines: 0, limit: 2 });
+    expect(hits[0]?.path).toBe("memory/alpha-beta-gamma.md");
+  });
+
+  it("refreshes cached file contents after rewrite", async () => {
+    const workspace = await fixtureWorkspace();
+    const file = path.join(workspace, "memory", "cache.md");
+    await writeFile(file, "old-cache-token\n");
+    expect(await searchMemory("old-cache-token", { config: { workspace } })).toHaveLength(1);
+    await writeFile(file, "fresh-cache-token with a different size\n");
+    const freshHits = await searchMemory("fresh-cache-token", { config: { workspace } });
+    expect(freshHits).toHaveLength(1);
+    expect(freshHits[0]?.matchText).toContain("fresh-cache-token");
+  });
+
+  it("caps search snippets and match lines", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "long-line.md"), `longlinetoken ${"x".repeat(6000)}\n`);
+    const hits = await searchMemory("longlinetoken", { config: { workspace }, contextLines: 0 });
+    expect(hits[0]?.snippet.length).toBeLessThanOrEqual(4000);
+    expect(hits[0]?.matchText.length).toBeLessThanOrEqual(2000);
+  });
+
+  it("honors an already-aborted search signal", async () => {
+    const workspace = await fixtureWorkspace();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(searchMemory("plugin", { config: { workspace }, signal: controller.signal })).rejects.toThrow();
+  });
+
+  it("debug logs scanned file and hit counts", async () => {
+    const workspace = await fixtureWorkspace();
+    const debug: string[] = [];
+    await searchMemory("plugin", {
+      config: { workspace },
+      logger: { debug: (message) => debug.push(message) },
+    });
+    expect(debug.some((message) => message.includes("scanned") && message.includes("hits"))).toBe(true);
   });
 
   it("applies a custom allowedRoots from config", async () => {

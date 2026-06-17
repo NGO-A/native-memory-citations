@@ -35,37 +35,77 @@ export type AnswerResult = {
   known: boolean;
 };
 
+export type MemoryLogger = {
+  debug?: (message: string) => void;
+  info?: (message: string) => void;
+  warn?: (message: string) => void;
+  error?: (message: string) => void;
+};
+
 const DEFAULT_PRIVATE_ROOTS = ["memory", "MEMORY.md", "USER.md", "IDENTITY.md", "TOOLS.md"];
 const DEFAULT_SHARED_ROOTS = ["memory", "USER.md", "IDENTITY.md", "TOOLS.md"];
 const TEXT_EXTENSIONS = new Set([".md", ".txt", ".json", ".jsonl", ".yaml", ".yml"]);
 const ANSWER_MIN_SCORE = 3;
 const ANSWER_MIN_TERM_RATIO = 0.5;
 const MAX_REGION_LINES = 25;
-const ANSWER_STOP_TERMS = new Set([
-  "what",
-  "does",
-  "should",
+const FILE_CACHE_MAX = 512;
+const MAX_LINE_CHARS = 2000;
+const MAX_SNIPPET_CHARS = 4000;
+const SCAN_CONCURRENCY = 8;
+const STOPWORDS = new Set([
   "the",
+  "a",
+  "an",
   "and",
+  "or",
+  "but",
+  "if",
+  "of",
+  "to",
+  "in",
+  "on",
   "for",
   "from",
+  "is",
+  "it",
+  "its",
+  "at",
+  "by",
+  "as",
   "with",
-  "into",
-  "about",
-  "that",
   "this",
-  "when",
-  "where",
+  "that",
+  "what",
+  "which",
   "who",
   "how",
   "why",
+  "when",
+  "where",
+  "do",
+  "does",
+  "did",
+  "can",
+  "could",
+  "should",
+  "would",
+  "will",
+  "you",
+  "your",
+  "i",
+  "my",
+  "me",
+  "we",
+  "our",
   "are",
   "was",
   "were",
+  "be",
   "been",
-  "being",
-  "did",
 ]);
+
+type CachedFile = { mtimeMs: number; size: number; lines: string[] };
+const fileCache = new Map<string, CachedFile>();
 
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
   const n = Math.floor(value ?? fallback);
@@ -131,7 +171,7 @@ export async function pathForSourceId(config: PluginConfig, sourceId: string): P
   return toSafePath(config, sourceId);
 }
 
-async function collectFiles(root: string): Promise<string[]> {
+async function collectFiles(root: string, logger?: MemoryLogger): Promise<string[]> {
   const info = await stat(root).catch(() => null);
   if (!info) {
     return [];
@@ -150,9 +190,11 @@ async function collectFiles(root: string): Promise<string[]> {
     }
     const child = path.join(root, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await collectFiles(child));
+      files.push(...await collectFiles(child, logger));
     } else if (entry.isFile() && TEXT_EXTENSIONS.has(path.extname(entry.name))) {
       files.push(child);
+    } else if (entry.isSymbolicLink()) {
+      logger?.warn?.(`native-memory-citations: skipped symlink during search: ${child}`);
     }
   }
   return files;
@@ -165,25 +207,70 @@ function terms(query: string): string[] {
         .toLowerCase()
         .split(/[^a-z0-9_@.+-]+/g)
         .map((term) => term.trim())
-        .filter((term) => term.length >= 2),
+        .filter((term) => term.length >= 2 && !STOPWORDS.has(term)),
     ),
   );
 }
 
-function answerTerms(queryTerms: string[]): string[] {
-  const filtered = queryTerms.filter((term) => !ANSWER_STOP_TERMS.has(term));
-  return filtered.length > 0 ? filtered : queryTerms;
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function lineScore(line: string, queryTerms: string[]): number {
+type Matcher = { test: (lower: string) => boolean; weight: number };
+
+function buildMatchers(queryTerms: string[]): Matcher[] {
+  return queryTerms.map((term) => {
+    const weight = term.length >= 5 ? 3 : 1;
+    if (term.length >= 4) {
+      return { test: (lower: string) => lower.includes(term), weight };
+    }
+    const re = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(term)}(?:[^a-z0-9]|$)`);
+    return { test: (lower: string) => re.test(lower), weight };
+  });
+}
+
+function scoreLine(line: string, matchers: Matcher[]): number {
   const lower = line.toLowerCase();
   let score = 0;
-  for (const term of queryTerms) {
-    if (lower.includes(term)) {
-      score += term.length >= 5 ? 3 : 1;
+  for (const matcher of matchers) {
+    if (matcher.test(lower)) {
+      score += matcher.weight;
     }
   }
   return score;
+}
+
+async function loadLines(file: string, maxFileBytes: number, logger?: MemoryLogger): Promise<string[] | null> {
+  const info = await stat(file).catch(() => null);
+  if (!info || !info.isFile()) {
+    fileCache.delete(file);
+    return null;
+  }
+  if (info.size > maxFileBytes) {
+    fileCache.delete(file);
+    logger?.warn?.(`native-memory-citations: skipped oversized file: ${file}`);
+    return null;
+  }
+  const cached = fileCache.get(file);
+  if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) {
+    fileCache.delete(file);
+    fileCache.set(file, cached);
+    return cached.lines;
+  }
+  const text = await readFile(file, "utf8").catch(() => "");
+  if (!text.trim()) {
+    fileCache.delete(file);
+    return null;
+  }
+  const lines = text.split(/\r?\n/g);
+  fileCache.set(file, { mtimeMs: info.mtimeMs, size: info.size, lines });
+  if (fileCache.size > FILE_CACHE_MAX) {
+    const oldest = fileCache.keys().next().value;
+    if (oldest !== undefined) {
+      fileCache.delete(oldest);
+    }
+  }
+  return lines;
 }
 
 type Region = { start: number; end: number; score: number; anchorIndex: number; anchorScore: number };
@@ -221,59 +308,75 @@ function mergeRegions(
 
 export async function searchMemory(
   query: string,
-  options: { limit?: number; contextLines?: number; config?: PluginConfig } = {},
+  options: {
+    limit?: number;
+    contextLines?: number;
+    config?: PluginConfig;
+    signal?: AbortSignal;
+    logger?: MemoryLogger;
+  } = {},
 ): Promise<SearchHit[]> {
   const config = options.config ?? {};
   const queryTerms = terms(query);
-  if (queryTerms.length === 0) {
+  options.signal?.throwIfAborted();
+  const matchers = buildMatchers(queryTerms);
+  if (matchers.length === 0) {
     return [];
   }
   const limit = clampInt(options.limit, 8, 1, 50);
   const contextLines = clampInt(options.contextLines, 2, 0, 8);
   const maxFileBytes = Math.max(1024, Math.floor(config.maxFileBytes ?? 1024 * 1024));
-  const files = (await Promise.all(allowedRoots(config).map((root) => collectFiles(root)))).flat();
+  const files = (await Promise.all(allowedRoots(config).map((root) => collectFiles(root, options.logger)))).flat();
 
   const hits: SearchHit[] = [];
-  for (const file of files) {
-    const info = await stat(file).catch(() => null);
-    if (!info || info.size > maxFileBytes) {
-      continue;
-    }
-    const text = await readFile(file, "utf8").catch(() => "");
-    if (!text.trim()) {
-      continue;
-    }
-    const lines = text.split(/\r?\n/g);
-    const matches: { index: number; score: number }[] = [];
-    for (let index = 0; index < lines.length; index += 1) {
-      const score = lineScore(lines[index] ?? "", queryTerms);
-      if (score > 0) {
-        matches.push({ index, score });
+  for (let i = 0; i < files.length; i += SCAN_CONCURRENCY) {
+    options.signal?.throwIfAborted();
+    const batch = files.slice(i, i + SCAN_CONCURRENCY);
+    const batchHits = await Promise.all(batch.map(async (file) => {
+      options.signal?.throwIfAborted();
+      const lines = await loadLines(file, maxFileBytes, options.logger);
+      if (!lines) {
+        return [] as SearchHit[];
       }
-    }
-    if (matches.length === 0) {
-      continue;
-    }
-    const sourceId = sourceIdForPath(config, file);
-    for (const region of mergeRegions(matches, contextLines, lines.length)) {
-      const snippet = lines.slice(region.start, region.end + 1).join("\n").trim();
-      const distinctTerms = matchedTermCount(snippet, queryTerms);
-      hits.push({
-        sourceId,
-        path: sourceId,
-        lineStart: region.start + 1,
-        lineEnd: region.end + 1,
-        score: distinctTerms * 100 + Math.min(region.score, 50),
-        snippet,
-        matchLine: region.anchorIndex + 1,
-        matchText: (lines[region.anchorIndex] ?? "").trim(),
+      const matches: { index: number; score: number }[] = [];
+      for (let index = 0; index < lines.length; index += 1) {
+        if (index % 512 === 0) {
+          options.signal?.throwIfAborted();
+        }
+        const score = scoreLine(lines[index] ?? "", matchers);
+        if (score > 0) {
+          matches.push({ index, score });
+        }
+      }
+      if (matches.length === 0) {
+        return [] as SearchHit[];
+      }
+      const sourceId = sourceIdForPath(config, file);
+      return mergeRegions(matches, contextLines, lines.length).map((region) => {
+        const snippet = lines.slice(region.start, region.end + 1).join("\n").slice(0, MAX_SNIPPET_CHARS).trim();
+        const distinctTerms = matchedTermCount(snippet, matchers);
+        return {
+          sourceId,
+          path: sourceId,
+          lineStart: region.start + 1,
+          lineEnd: region.end + 1,
+          score: distinctTerms * 100 + Math.min(region.score, 50),
+          snippet,
+          matchLine: region.anchorIndex + 1,
+          matchText: (lines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim(),
+        } satisfies SearchHit;
       });
+    }));
+    for (const fileHits of batchHits) {
+      hits.push(...fileHits);
     }
   }
 
-  return hits
+  const sortedHits = hits
     .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.lineStart - b.lineStart)
     .slice(0, limit);
+  options.logger?.debug?.(`native-memory-citations: scanned ${files.length} files, returned ${sortedHits.length} hits`);
+  return sortedHits;
 }
 
 export async function fetchMemorySource(
@@ -287,8 +390,10 @@ export async function fetchMemorySource(
   const file = await toSafePath(config, requested);
   const text = await readFile(file, "utf8");
   const lines = text.split(/\r?\n/g);
-  const lineStart = Math.max(1, Math.floor(input.lineStart ?? 1));
-  const lineEnd = Math.min(lines.length, Math.max(lineStart, Math.floor(input.lineEnd ?? lines.length)));
+  const requestedStart = Math.max(1, Math.floor(input.lineStart ?? 1));
+  const lineStart = Math.min(lines.length, requestedStart);
+  const requestedEnd = Math.max(1, Math.floor(input.lineEnd ?? lines.length));
+  const lineEnd = Math.min(lines.length, Math.max(lineStart, requestedEnd));
   const maxChars = Math.max(256, Math.floor(input.maxChars ?? 8000));
   const content = lines.slice(lineStart - 1, lineEnd).join("\n").slice(0, maxChars);
   const sourceId = sourceIdForPath(config, file);
@@ -302,21 +407,21 @@ export async function fetchMemorySource(
   };
 }
 
-function extractSentences(snippet: string, queryTerms: string[]): string[] {
+function extractSentences(snippet: string, matchers: Matcher[]): string[] {
   return snippet
     .split(/(?<=[.!?])\s+|\n+/g)
     .map((sentence) => sentence.trim())
     .filter(Boolean)
-    .filter((sentence) => queryTerms.some((term) => sentence.toLowerCase().includes(term)))
-    .map((sentence, index) => ({ sentence, index, score: lineScore(sentence, queryTerms) }))
+    .map((sentence, index) => ({ sentence, index, score: scoreLine(sentence, matchers) }))
+    .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .map((item) => item.sentence)
     .slice(0, 2);
 }
 
-function matchedTermCount(snippet: string, queryTerms: string[]): number {
+function matchedTermCount(snippet: string, matchers: Matcher[]): number {
   const lower = snippet.toLowerCase();
-  return queryTerms.filter((term) => lower.includes(term)).length;
+  return matchers.filter((matcher) => matcher.test(lower)).length;
 }
 
 function requiredMatchedTerms(queryTerms: string[]): number {
@@ -331,20 +436,22 @@ function requiredMatchedTerms(queryTerms: string[]): number {
 
 export async function answerFromMemory(
   query: string,
-  options: { limit?: number; config?: PluginConfig } = {},
+  options: { limit?: number; config?: PluginConfig; signal?: AbortSignal; logger?: MemoryLogger } = {},
 ): Promise<AnswerResult> {
+  const queryTerms = terms(query);
+  const matchers = buildMatchers(queryTerms);
   const hits = await searchMemory(query, {
     limit: options.limit ?? 6,
     contextLines: 2,
     config: options.config,
+    signal: options.signal,
+    logger: options.logger,
   });
-  const queryTerms = terms(query);
-  const confidenceTerms = answerTerms(queryTerms);
 
-  const distinctTermsMatched = confidenceTerms.filter((term) =>
-    hits.some((hit) => hit.snippet.toLowerCase().includes(term)),
+  const distinctTermsMatched = matchers.filter((matcher) =>
+    hits.some((hit) => matcher.test(hit.snippet.toLowerCase())),
   ).length;
-  const requiredDistinctTerms = requiredMatchedTerms(confidenceTerms);
+  const requiredDistinctTerms = requiredMatchedTerms(queryTerms);
   const topScore = hits[0]?.score ?? 0;
   const confident = hits.length > 0
     && topScore >= ANSWER_MIN_SCORE
@@ -360,10 +467,10 @@ export async function answerFromMemory(
 
   const points: string[] = [];
   for (const hit of hits.slice(0, 1)) {
-    if (matchedTermCount(hit.snippet, confidenceTerms) < requiredDistinctTerms) {
+    if (matchedTermCount(hit.snippet, matchers) < requiredDistinctTerms) {
       continue;
     }
-    const sentences = extractSentences(hit.snippet, confidenceTerms);
+    const sentences = extractSentences(hit.snippet, matchers);
     const text = hit.matchText || sentences[0] || hit.snippet.split(/\n+/g).find(Boolean) || "";
     if (text.trim()) {
       points.push(`- ${text.trim()} [${hit.path}:${hit.matchLine}]`);
