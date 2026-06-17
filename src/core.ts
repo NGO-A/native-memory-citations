@@ -38,6 +38,7 @@ const DEFAULT_SHARED_ROOTS = ["memory", "USER.md", "IDENTITY.md", "TOOLS.md"];
 const TEXT_EXTENSIONS = new Set([".md", ".txt", ".json", ".jsonl", ".yaml", ".yml"]);
 const ANSWER_MIN_SCORE = 3;
 const ANSWER_MIN_TERM_RATIO = 0.5;
+const MAX_REGION_LINES = 25;
 const ANSWER_STOP_TERMS = new Set([
   "what",
   "does",
@@ -142,7 +143,7 @@ async function collectFiles(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   const files: string[] = [];
   for (const entry of entries) {
-    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".venv") {
+    if (entry.name.startsWith(".") || entry.name === "node_modules") {
       continue;
     }
     const child = path.join(root, entry.name);
@@ -195,7 +196,8 @@ function mergeRegions(
   for (const match of matches) {
     const start = Math.max(0, match.index - contextLines);
     const end = Math.min(lineCount - 1, match.index + contextLines);
-    if (current && start <= current.end + 1) {
+    const currentLineCount = current ? current.end - current.start + 1 : 0;
+    if (current && start <= current.end + 1 && currentLineCount < MAX_REGION_LINES) {
       current.end = Math.max(current.end, end);
       current.score += match.score;
     } else {

@@ -37,6 +37,24 @@ describe("native memory citations core", () => {
     expect(fromFixture).toHaveLength(1);
   });
 
+  it("skips hidden memory directories like .dreams by default", async () => {
+    const workspace = await fixtureWorkspace();
+    await mkdir(path.join(workspace, "memory", ".dreams"), { recursive: true });
+    await writeFile(path.join(workspace, "memory", ".dreams", "events.jsonl"), "native memory citations hidden\n");
+    const hits = await searchMemory("hidden native memory citations", { config: { workspace }, contextLines: 2 });
+    expect(hits.some((hit) => hit.path.includes(".dreams"))).toBe(false);
+  });
+
+  it("caps very dense merged regions", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "dense.md"),
+      Array.from({ length: 60 }, (_, index) => `dense repeated term ${index}`).join("\n"),
+    );
+    const hits = await searchMemory("dense repeated", { config: { workspace }, contextLines: 2, limit: 1 });
+    expect((hits[0]?.lineEnd ?? 0) - (hits[0]?.lineStart ?? 0) + 1).toBeLessThanOrEqual(25);
+  });
+
   it("fetches cited memory ranges", async () => {
     const workspace = await fixtureWorkspace();
     const result = await fetchMemorySource(
