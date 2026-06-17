@@ -7,7 +7,27 @@
   "description": "Search and fetch local OpenClaw memory with source citations and extractive cited answers.",
   "configSchema": {
     "type": "object",
-    "properties": {},
+    "properties": {
+      "workspace": {
+        "type": "string",
+        "description": "Absolute path to the OpenClaw workspace. Defaults to $OPENCLAW_WORKSPACE or ~/.openclaw/workspace."
+      },
+      "allowedRoots": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Workspace-relative memory roots to search. Overrides the built-in default set."
+      },
+      "sharedMode": {
+        "type": "boolean",
+        "description": "When true, exclude the private MEMORY.md from the default root set."
+      },
+      "maxFileBytes": {
+        "type": "number",
+        "description": "Per-file size cap in bytes. Files larger than this are skipped. Default 1048576."
+      }
+    },
     "additionalProperties": false
   },
   "version": "0.1.0",

@@ -5,14 +5,19 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "declaration": true,
+    "rootDir": "src",
     "outDir": "dist",
     "skipLibCheck": true,
     "types": [
-      "node",
-      "vitest/globals"
+      "node"
     ]
   },
   "include": [
     "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "dist",
+    "node_modules"
   ]
 }

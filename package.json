@@ -9,17 +9,28 @@
       "./dist/index.js"
     ]
   },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "plugin:validate": "npm run build && openclaw plugins validate --entry ./dist/index.js",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "plugin:build": "npm run build && openclaw plugins build --entry ./dist/index.js",
+    "plugin:build:check": "npm run build && openclaw plugins build --entry ./dist/index.js --check",
+    "plugin:validate": "npm run plugin:build && openclaw plugins validate --entry ./dist/index.js",
     "test": "vitest run --dir src --no-file-parallelism"
   },
   "dependencies": {
-    "typebox": "^1.1.38"
+    "typebox": "1.1.39"
   },
   "devDependencies": {
-    "@types/node": "^25.9.3",
-    "openclaw": "latest",
+    "@types/node": "^22.19.0",
+    "openclaw": "2026.6.8",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
   },
