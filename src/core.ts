@@ -37,6 +37,32 @@ const DEFAULT_PRIVATE_ROOTS = ["memory", "MEMORY.md", "USER.md", "IDENTITY.md", 
 const DEFAULT_SHARED_ROOTS = ["memory", "USER.md", "IDENTITY.md", "TOOLS.md"];
 const TEXT_EXTENSIONS = new Set([".md", ".txt", ".json", ".jsonl", ".yaml", ".yml"]);
 const ANSWER_MIN_SCORE = 3;
+const ANSWER_MIN_TERM_RATIO = 0.5;
+const ANSWER_STOP_TERMS = new Set([
+  "what",
+  "does",
+  "should",
+  "the",
+  "and",
+  "for",
+  "from",
+  "with",
+  "into",
+  "about",
+  "that",
+  "this",
+  "when",
+  "where",
+  "who",
+  "how",
+  "why",
+  "are",
+  "was",
+  "were",
+  "been",
+  "being",
+  "did",
+]);
 
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
   const n = Math.floor(value ?? fallback);
@@ -139,6 +165,11 @@ function terms(query: string): string[] {
         .filter((term) => term.length >= 2),
     ),
   );
+}
+
+function answerTerms(queryTerms: string[]): string[] {
+  const filtered = queryTerms.filter((term) => !ANSWER_STOP_TERMS.has(term));
+  return filtered.length > 0 ? filtered : queryTerms;
 }
 
 function lineScore(line: string, queryTerms: string[]): number {
@@ -265,7 +296,25 @@ function extractSentences(snippet: string, queryTerms: string[]): string[] {
     .map((sentence) => sentence.trim())
     .filter(Boolean)
     .filter((sentence) => queryTerms.some((term) => sentence.toLowerCase().includes(term)))
+    .map((sentence, index) => ({ sentence, index, score: lineScore(sentence, queryTerms) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((item) => item.sentence)
     .slice(0, 2);
+}
+
+function matchedTermCount(snippet: string, queryTerms: string[]): number {
+  const lower = snippet.toLowerCase();
+  return queryTerms.filter((term) => lower.includes(term)).length;
+}
+
+function requiredMatchedTerms(queryTerms: string[]): number {
+  if (queryTerms.length <= 1) {
+    return queryTerms.length;
+  }
+  return Math.min(
+    queryTerms.length,
+    Math.max(2, Math.ceil(queryTerms.length * ANSWER_MIN_TERM_RATIO)),
+  );
 }
 
 export async function answerFromMemory(
@@ -278,11 +327,12 @@ export async function answerFromMemory(
     config: options.config,
   });
   const queryTerms = terms(query);
+  const confidenceTerms = answerTerms(queryTerms);
 
-  const distinctTermsMatched = queryTerms.filter((term) =>
+  const distinctTermsMatched = confidenceTerms.filter((term) =>
     hits.some((hit) => hit.snippet.toLowerCase().includes(term)),
   ).length;
-  const requiredDistinctTerms = Math.min(2, queryTerms.length);
+  const requiredDistinctTerms = requiredMatchedTerms(confidenceTerms);
   const topScore = hits[0]?.score ?? 0;
   const confident = hits.length > 0
     && topScore >= ANSWER_MIN_SCORE
@@ -298,7 +348,10 @@ export async function answerFromMemory(
 
   const points: string[] = [];
   for (const hit of hits.slice(0, 4)) {
-    const sentences = extractSentences(hit.snippet, queryTerms);
+    if (matchedTermCount(hit.snippet, confidenceTerms) < requiredDistinctTerms) {
+      continue;
+    }
+    const sentences = extractSentences(hit.snippet, confidenceTerms);
     const text = sentences[0] || hit.snippet.split(/\n+/g).find(Boolean) || "";
     if (text.trim()) {
       points.push(`- ${text.trim()} [${hit.path}:${hit.lineStart}]`);

@@ -14,6 +14,7 @@ async function fixtureWorkspace(): Promise<string> {
       "",
       "- Mo decided Ninja should create a native memory citation plugin.",
       "- The plugin should return source citations instead of unsupported claims.",
+      "- Native Memory Citations registers tools native_memory_search, native_memory_fetch, and native_memory_answer.",
     ].join("\n"),
   );
   await writeFile(path.join(workspace, "MEMORY.md"), "- Private long-term memory about agent orchestration.\n");
@@ -53,6 +54,14 @@ describe("native memory citations core", () => {
     expect(result.answer).toContain("[memory/2026-06-16.md:");
   });
 
+  it("extracts the highest-signal line from a cited region", async () => {
+    const workspace = await fixtureWorkspace();
+    const result = await answerFromMemory("What tools does Native Memory Citations register?", { config: { workspace } });
+    expect(result.known).toBe(true);
+    expect(result.answer).toContain("native_memory_search");
+    expect(result.answer).not.toContain("Private long-term memory");
+  });
+
   it("reports known:false when nothing relevant is found", async () => {
     const workspace = await fixtureWorkspace();
     const result = await answerFromMemory("quantum chromodynamics lagrangian", { config: { workspace } });
@@ -64,6 +73,13 @@ describe("native memory citations core", () => {
     const workspace = await fixtureWorkspace();
     const result = await answerFromMemory("plugin zzqx-token-not-present", { config: { workspace } });
     expect(result.known).toBe(false);
+  });
+
+  it("does not claim an answer when only generic terms match", async () => {
+    const workspace = await fixtureWorkspace();
+    const result = await answerFromMemory("zzqx blorple nonpresent memory answer", { config: { workspace } });
+    expect(result.known).toBe(false);
+    expect(result.citations).toHaveLength(0);
   });
 
   it("blocks paths outside allowed roots", async () => {
