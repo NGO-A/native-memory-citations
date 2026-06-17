@@ -73,3 +73,34 @@ A future version can add vector search while keeping the same public tool names.
 Search is keyword/substring based and re-reads the corpus on each query; for
 large memory trees a future version should add an index/cache and honor
 `context.signal` for mid-search cancellation.
+
+## Install
+
+```bash
+openclaw plugins install clawhub:ngo-a/native-memory-citations # ClawHub (preferred)
+openclaw plugins install openclaw-native-memory-citations # npm
+openclaw plugins install ./native-memory-citations # local checkout
+```
+
+Reload the Gateway after installing so the plugin host exposes the tools.
+
+## Security Model
+
+See [SECURITY.md](./SECURITY.md): `allowedRoots` is trusted operator config;
+a symlink that escapes a root, and any caller-supplied fetch path, is untrusted
+and re-checked with `realpath`; symlinks found while walking directories during
+search are skipped.
+
+## Publish
+
+Deferred until distribution mode. When publishing: remove `private`, add the
+`files` allowlist and `prepublishOnly` script, then
+`clawhub package publish ngo-a/native-memory-citations` (or `npm publish`).
+
+## License
+
+[MIT](./LICENSE)
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md).

@@ -4,6 +4,24 @@
   "type": "module",
   "private": true,
   "description": "Native OpenClaw plugin for cited local memory search and retrieval.",
+  "license": "MIT",
+  "author": "NGO-A <ngo-a@users.noreply.github.com>",
+  "homepage": "https://github.com/NGO-A/native-memory-citations#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NGO-A/native-memory-citations.git"
+  },
+  "bugs": {
+    "url": "https://github.com/NGO-A/native-memory-citations/issues"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "memory",
+    "citations",
+    "search",
+    "retrieval"
+  ],
   "openclaw": {
     "extensions": [
       "./dist/index.js"

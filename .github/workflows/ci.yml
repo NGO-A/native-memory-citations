@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  build-validate-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: npm
+
+      - name: Install (locked)
+        run: npm ci
+
+      - name: Build and check manifest is not stale
+        run: npm run plugin:build:check
+
+      - name: Validate plugin metadata
+        run: openclaw plugins validate --entry ./dist/index.js
+
+      - name: Test
+        run: npm test
+
+      - name: Fail on stray whitespace/conflict markers
+        run: git diff --check
