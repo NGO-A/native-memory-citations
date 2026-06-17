@@ -1,0 +1,29 @@
+{
+  "name": "openclaw-native-memory-citations",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Native OpenClaw plugin for cited local memory search and retrieval.",
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "plugin:validate": "npm run build && openclaw plugins validate --entry ./dist/index.js",
+    "test": "vitest run --dir src --no-file-parallelism"
+  },
+  "dependencies": {
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "openclaw": "latest",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
+  }
+}

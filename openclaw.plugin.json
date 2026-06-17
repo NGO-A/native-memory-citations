@@ -1,0 +1,21 @@
+{
+  "id": "native-memory-citations",
+  "activation": {
+    "onStartup": true
+  },
+  "name": "Native Memory Citations",
+  "description": "Search and fetch local OpenClaw memory with source citations and extractive cited answers.",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "version": "0.1.0",
+  "contracts": {
+    "tools": [
+      "native_memory_search",
+      "native_memory_fetch",
+      "native_memory_answer"
+    ]
+  }
+}
