@@ -26,7 +26,7 @@ jobs:
         run: npm run plugin:build:check
 
       - name: Validate plugin metadata
-        run: openclaw plugins validate --entry ./dist/index.js
+        run: npx openclaw plugins validate --entry ./dist/index.js
 
       - name: Test
         run: npm test
