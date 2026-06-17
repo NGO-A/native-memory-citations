@@ -351,7 +351,7 @@ export async function answerFromMemory(
   }
 
   const points: string[] = [];
-  for (const hit of hits.slice(0, 4)) {
+  for (const hit of hits.slice(0, 1)) {
     if (matchedTermCount(hit.snippet, confidenceTerms) < requiredDistinctTerms) {
       continue;
     }
