@@ -15,6 +15,20 @@ async function fixtureWorkspace(): Promise<string> {
   return workspace;
 }
 
+function registeredPluginTools(workspace: string) {
+  const registeredTools: Array<{
+    name: string;
+    execute: (toolCallId: string, params: unknown, signal?: AbortSignal) => Promise<unknown>;
+  }> = [];
+  plugin.register({
+    pluginConfig: { workspace },
+    registerTool(tool: unknown) {
+      registeredTools.push(tool as typeof registeredTools[number]);
+    },
+  } as never);
+  return registeredTools;
+}
+
 describe("plugin manifest contract", () => {
   it("declares the expected id and tool names", async () => {
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
@@ -56,5 +70,24 @@ describe("plugin manifest contract", () => {
     expect(result).toMatchObject({
       details: [],
     });
+  });
+
+  it("does not expose raw fields or raw secret values through tool outputs", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "deploy.md"), "deploy_token: production-east\n");
+    const registeredTools = registeredPluginTools(workspace);
+    const searchTool = registeredTools.find((tool) => tool.name === "native_memory_search");
+    const fetchTool = registeredTools.find((tool) => tool.name === "native_memory_fetch");
+    const answerTool = registeredTools.find((tool) => tool.name === "native_memory_answer");
+
+    const searchResult = await searchTool?.execute("call-search", { query: "production" });
+    const fetchResult = await fetchTool?.execute("call-fetch", { sourceId: "memory/deploy.md" });
+    const answerResult = await answerTool?.execute("call-answer", { query: "production" });
+    const serialized = JSON.stringify({ searchResult, fetchResult, answerResult });
+
+    expect(serialized).toContain("[REDACTED]");
+    expect(serialized).not.toContain("rawSnippet");
+    expect(serialized).not.toContain("rawMatchText");
+    expect(serialized).not.toContain("production-east");
   });
 });

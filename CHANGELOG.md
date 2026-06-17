@@ -13,8 +13,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hashes return a stale-citation warning on the fetch result.
 - Added output redaction for common secret patterns across search snippets,
   match lines, fetched content, and extractive answers.
+- Expanded single-line redaction coverage for Azure keys/SAS signatures, AWS
+  access key ids, Slack tokens, Google API keys, JWTs, and credential URLs.
 
 ### Fixed
+- Fixed line-range fetch and zero-context search leakage for multi-line
+  private-key blocks by using full-file, line-preserving redaction before output
+  selection.
+- Separated raw relevance scoring and answer confidence from redacted public
+  output, so redacted values can still support recall without leaking.
 - Rejected unsafe custom `allowedRoots` values including empty entries, `.`,
   `..`, paths containing `..`, absolute paths, and hidden path segments.
 - Normalized non-finite `maxFileBytes` values to the default cap.

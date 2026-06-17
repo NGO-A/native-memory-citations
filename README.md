@@ -74,9 +74,12 @@ concurrency, and `AbortSignal` checks during scan.
 
 Returned snippets, fetched content, match lines, and extractive answers are
 redacted for common secret patterns such as bearer tokens, API keys, GitHub
-tokens, password/secret/token assignment lines, and private key blocks. Redaction
-does not mutate source files and does not affect citation hashes, which are
-computed from original file text.
+tokens, password/secret/token assignment lines, credential URLs, JWTs, cloud
+keys, and private key blocks. Redaction is defense-in-depth, not the access
+boundary; the boundary is allowed roots, hidden-path rejection, symlink/realpath
+checks, file-type filtering, and size limits. Redaction does not mutate source
+files and does not affect citation hashes, which are computed from original file
+text.
 
 ## Citation Integrity
 
@@ -97,14 +100,15 @@ To detect stale citations, pass the hash from a prior search hit:
 
 If the file changed, fetch still returns the current content for inspection, but
 marks the result with `stale: true` and a `staleMessage` explaining the hash
-mismatch.
+mismatch. Because hashes cover the full file, appending to a daily journal marks
+earlier citations stale even when the cited lines themselves are unchanged.
 
 ## Install
 
 ```bash
-openclaw plugins install clawhub:ngo-a/native-memory-citations # ClawHub (preferred)
-openclaw plugins install openclaw-native-memory-citations # npm
-openclaw plugins install ./native-memory-citations # local checkout
+openclaw plugins install ./native-memory-citations # current/private local checkout
+openclaw plugins install clawhub:ngo-a/native-memory-citations # future publish mode
+openclaw plugins install openclaw-native-memory-citations # future npm publish mode
 ```
 
 Reload the Gateway after installing so the plugin host exposes the tools.
@@ -117,7 +121,8 @@ and re-checked with `realpath`; symlinks found while walking directories during
 search are skipped. Fetch also rejects hidden path segments, non-text files, and
 files larger than `maxFileBytes`. Citation hashes let callers detect when a
 previous path-and-line citation may now point at changed content. Returned text
-is redacted for common secret patterns before it leaves the plugin.
+is redacted for common secret patterns before it leaves the plugin, but
+redaction is not an authorization or access-control boundary.
 
 ## Publish
 

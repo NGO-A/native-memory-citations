@@ -31,6 +31,10 @@ boundary is defined as follows:
 - Returned snippets, fetched content, match lines, and extractive answer lines
   are redacted for common secret patterns before being returned. Redaction does
   not modify files on disk and does not affect citation hashes.
+- Redaction is best-effort defense-in-depth and must not be treated as an
+  authorization or access-control boundary. The access boundary is the approved
+  roots, realpath/symlink containment, hidden-path rejection, file-type filtering,
+  and file-size limits.
 
 This plugin does not transmit memory contents anywhere; it only returns cited
 snippets to the calling agent. It performs no network I/O.

@@ -246,6 +246,197 @@ describe("native memory citations core", () => {
     expect(answer.answer).not.toContain("sk-proj-abcdefghijklmnopqrstuvwxyz");
   });
 
+  it("redacts a private-key body line fetched without block markers", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "key.md"),
+      [
+        "-----BEGIN PRIVATE KEY-----",
+        "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+        "-----END PRIVATE KEY-----",
+      ].join("\n"),
+    );
+
+    const result = await fetchMemorySource({ sourceId: "memory/key.md", lineStart: 2, lineEnd: 2 }, { workspace });
+    expect(result.content).toBe("[REDACTED_PRIVATE_KEY]");
+    expect(result.content).not.toContain("MIIEvQIB");
+  });
+
+  it("redacts a private-key body line found by zero-context search", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "key-search.md"),
+      [
+        "-----BEGIN PRIVATE KEY-----",
+        "secretKEYmaterialONLYline",
+        "-----END PRIVATE KEY-----",
+      ].join("\n"),
+    );
+
+    const hits = await searchMemory("secretKEYmaterialONLYline", { config: { workspace }, contextLines: 0 });
+    expect(hits[0]?.snippet).toBe("[REDACTED_PRIVATE_KEY]");
+    expect(hits[0]?.matchText).toBe("[REDACTED_PRIVATE_KEY]");
+    expect(JSON.stringify(hits)).not.toContain("secretKEYmaterialONLYline");
+  });
+
+  it("redacts private-key body content when merged search regions cross a block edge", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "key-edge.md"),
+      [
+        "-----BEGIN PRIVATE KEY-----",
+        "edgeKEYmaterialONLYline",
+        "-----END PRIVATE KEY-----",
+        "edgeKEYmaterialONLYline normal note",
+      ].join("\n"),
+    );
+
+    const hits = await searchMemory("edgeKEYmaterialONLYline", { config: { workspace }, contextLines: 1 });
+    expect(hits[0]?.snippet).toContain("[REDACTED_PRIVATE_KEY]");
+    expect(hits[0]?.snippet).toContain("edgeKEYmaterialONLYline normal note");
+    expect(hits[0]?.snippet).not.toContain("-----BEGIN PRIVATE KEY-----");
+  });
+
+  it("redacts an unclosed private-key block through EOF", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "unclosed-key.md"),
+      [
+        "before note",
+        "-----BEGIN PRIVATE KEY-----",
+        "unclosedKEYmaterialONLYline",
+        "stillKEYmaterialONLYline",
+      ].join("\n"),
+    );
+
+    const result = await fetchMemorySource({ sourceId: "memory/unclosed-key.md", lineStart: 2, lineEnd: 4 }, { workspace });
+    expect(result.content).toBe([
+      "[REDACTED_PRIVATE_KEY]",
+      "[REDACTED_PRIVATE_KEY]",
+      "[REDACTED_PRIVATE_KEY]",
+    ].join("\n"));
+    expect(result.content).not.toContain("unclosedKEYmaterialONLYline");
+  });
+
+  it("redacts a bounded non-blank run before an orphan private-key end marker", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "orphan-end.md"),
+      [
+        "safe prose above",
+        "",
+        "orphanKEYmaterialONLYline",
+        "anotherKEYmaterialONLYline",
+        "-----END PRIVATE KEY-----",
+      ].join("\n"),
+    );
+
+    const result = await fetchMemorySource({ sourceId: "memory/orphan-end.md" }, { workspace });
+    expect(result.content).toContain("safe prose above");
+    expect(result.content).toContain("[REDACTED_PRIVATE_KEY]");
+    expect(result.content).not.toContain("orphanKEYmaterialONLYline");
+  });
+
+  it("redacts indented private-key markers from markdown blocks", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "indented-key.md"),
+      [
+        "    -----BEGIN PRIVATE KEY-----",
+        "    indentedKEYmaterialONLYline",
+        "    -----END PRIVATE KEY-----",
+      ].join("\n"),
+    );
+
+    const hits = await searchMemory("indentedKEYmaterialONLYline", { config: { workspace }, contextLines: 0 });
+    expect(hits[0]?.snippet).toBe("[REDACTED_PRIVATE_KEY]");
+    expect(JSON.stringify(hits)).not.toContain("indentedKEYmaterialONLYline");
+  });
+
+  it("redacts PGP private-key blocks", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "pgp-key.md"),
+      [
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        "pgpKEYmaterialONLYline",
+        "-----END PGP PRIVATE KEY BLOCK-----",
+      ].join("\n"),
+    );
+
+    const result = await fetchMemorySource({ sourceId: "memory/pgp-key.md", lineStart: 2, lineEnd: 2 }, { workspace });
+    expect(result.content).toBe("[REDACTED_PRIVATE_KEY]");
+    expect(result.content).not.toContain("pgpKEYmaterialONLYline");
+  });
+
+  it("preserves prose above a blank before a stray private-key end marker", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "stray-end-prose.md"),
+      [
+        "first prose line",
+        "second prose line",
+        "",
+        "This paragraph mentions -----END PRIVATE KEY-----",
+      ].join("\n"),
+    );
+
+    const result = await fetchMemorySource({ sourceId: "memory/stray-end-prose.md" }, { workspace });
+    expect(result.content).toContain("first prose line");
+    expect(result.content).toContain("second prose line");
+  });
+
+  it("uses raw relevance while emitting only redacted answer text", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "deploy.md"), "deploy_token: production-east\n");
+    const result = await answerFromMemory("production", { config: { workspace } });
+    expect(result.known).toBe(true);
+    expect(result.answer).toContain("[REDACTED]");
+    expect(result.answer).not.toContain("production-east");
+    expect(result.citations).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain("rawSnippet");
+    expect(JSON.stringify(result)).not.toContain("rawMatchText");
+  });
+
+  it("keeps raw fields out of public search results", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "deploy-search.md"), "deploy_token: production-east\n");
+    const hits = await searchMemory("production", { config: { workspace } });
+    const serialized = JSON.stringify(hits);
+    expect(serialized).not.toContain("rawSnippet");
+    expect(serialized).not.toContain("rawMatchText");
+    expect(serialized).not.toContain("production-east");
+    expect(hits[0]?.snippet).toContain("[REDACTED]");
+  });
+
+  it("redacts expanded single-line credential patterns", async () => {
+    const workspace = await fixtureWorkspace();
+    const secretText = [
+      "AccountKey=azureAccountSecretValue",
+      "SharedAccessKey=azureSharedSecretValue",
+      "https://example.blob.core.windows.net/container?sig=azureSignatureValue&sv=1",
+      "AKIAABCDEFGHIJKLMNOP",
+      "ASIAABCDEFGHIJKLMNOP",
+      "xoxb-1234567890-abcdefghijklmnop",
+      "AIza0123456789ABCDEFGHIJKLMNOabcdefghij",
+      "eyJheader.eyJpayload.signatureSegment",
+      "https://user:password123@example.com/path",
+    ].join("\n");
+    await writeFile(path.join(workspace, "memory", "pattern-fixtures.md"), secretText);
+
+    const fetched = await fetchMemorySource({ sourceId: "memory/pattern-fixtures.md" }, { workspace });
+    expect(fetched.content).toContain("AccountKey=[REDACTED]");
+    expect(fetched.content).toContain("SharedAccessKey=[REDACTED]");
+    expect(fetched.content).toContain("sig=[REDACTED]");
+    expect(fetched.content).toContain("[REDACTED_AWS_KEY_ID]");
+    expect(fetched.content).toContain("[REDACTED_SLACK_TOKEN]");
+    expect(fetched.content).toContain("[REDACTED_GOOGLE_KEY]");
+    expect(fetched.content).toContain("[REDACTED_JWT]");
+    expect(fetched.content).toContain("https://user:[REDACTED]@example.com/path");
+    expect(fetched.content).not.toContain("azureAccountSecretValue");
+    expect(fetched.content).not.toContain("password123");
+  });
+
   it("answers with citations when memory contains the fact", async () => {
     const workspace = await fixtureWorkspace();
     const result = await answerFromMemory("What should the plugin return?", { config: { workspace } });

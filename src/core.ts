@@ -112,8 +112,16 @@ const STOPWORDS = new Set([
   "been",
 ]);
 
-type CachedFile = { mtimeMs: number; size: number; lines: string[]; sha256: string };
-const fileCache = new Map<string, CachedFile>();
+type LoadedFile = {
+  mtimeMs: number;
+  size: number;
+  rawText: string;
+  rawLines: string[];
+  redactedLines: string[];
+  sha256: string;
+};
+type InternalSearchHit = SearchHit & { rawSnippet: string; rawMatchText: string };
+const fileCache = new Map<string, LoadedFile>();
 
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
   const n = Math.floor(value ?? fallback);
@@ -213,22 +221,76 @@ function sha256Text(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-function redactSecrets(text: string): string {
-  return text
-    .replace(
-      /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
-      "[REDACTED_PRIVATE_KEY]",
-    )
-    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*/g, "[REDACTED_PRIVATE_KEY]")
-    .replace(/[\s\S]*-----END [A-Z0-9 ]*PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]")
+function isBeginMarker(line: string): boolean {
+  return /^\s*-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----\s*$/.test(line);
+}
+
+function isEndMarker(line: string): boolean {
+  return /^\s*-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----\s*$/.test(line);
+}
+
+function redactSingleLineSecrets(line: string): string {
+  return line
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi, "Bearer [REDACTED]")
     .replace(/\b(?:sk-proj-|sk-)[A-Za-z0-9_-]{16,}\b/g, "[REDACTED_OPENAI_KEY]")
     .replace(/\bgh[psuor]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
     .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
+    .replace(/\b(AccountKey|SharedAccessKey)=[^;\s]+/gi, "$1=[REDACTED]")
+    .replace(/\bsig=[^&\s]+/gi, "sig=[REDACTED]")
+    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[REDACTED_AWS_KEY_ID]")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "[REDACTED_SLACK_TOKEN]")
+    .replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, "[REDACTED_GOOGLE_KEY]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_JWT]")
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):[^\s:@/]+@/gi, "$1:[REDACTED]@")
     .replace(
       /\b([A-Za-z0-9_.-]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|CLIENT[_-]?SECRET)[A-Za-z0-9_.-]*\s*[:=]\s*)([^\s"'`]+|"[^"\n]+"|'[^'\n]+')/gi,
       "$1[REDACTED]",
     );
+}
+
+function buildRedactedLines(rawLines: string[]): string[] {
+  const mask = new Array<boolean>(rawLines.length).fill(false);
+
+  let open = -1;
+  for (let i = 0; i < rawLines.length; i += 1) {
+    if (isBeginMarker(rawLines[i] ?? "")) {
+      open = i;
+      mask[i] = true;
+      continue;
+    }
+    if (open >= 0) {
+      mask[i] = true;
+      if (isEndMarker(rawLines[i] ?? "")) {
+        open = -1;
+      }
+    }
+  }
+
+  for (let j = 0; j < rawLines.length; j += 1) {
+    if (isEndMarker(rawLines[j] ?? "") && !mask[j]) {
+      let k = j;
+      while (k >= 0 && (rawLines[k] ?? "").trim() !== "") {
+        mask[k] = true;
+        k -= 1;
+      }
+    }
+  }
+
+  return rawLines.map((line, index) => mask[index] ? "[REDACTED_PRIVATE_KEY]" : redactSingleLineSecrets(line));
+}
+
+function publicHit(hit: InternalSearchHit): SearchHit {
+  return {
+    sourceId: hit.sourceId,
+    path: hit.path,
+    lineStart: hit.lineStart,
+    lineEnd: hit.lineEnd,
+    score: hit.score,
+    snippet: hit.snippet,
+    matchLine: hit.matchLine,
+    matchText: hit.matchText,
+    sha256: hit.sha256,
+  };
 }
 
 async function collectFiles(root: string, logger?: MemoryLogger): Promise<string[]> {
@@ -300,7 +362,7 @@ function scoreLine(line: string, matchers: Matcher[]): number {
   return score;
 }
 
-async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogger): Promise<CachedFile | null> {
+async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogger): Promise<LoadedFile | null> {
   const info = await stat(file).catch(() => null);
   if (!info || !info.isFile()) {
     fileCache.delete(file);
@@ -317,13 +379,20 @@ async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogge
     fileCache.set(file, cached);
     return cached;
   }
-  const text = await readFile(file, "utf8").catch(() => "");
-  if (!text.trim()) {
+  const rawText = await readFile(file, "utf8").catch(() => "");
+  if (!rawText.trim()) {
     fileCache.delete(file);
     return null;
   }
-  const lines = text.split(/\r?\n/g);
-  const loaded = { mtimeMs: info.mtimeMs, size: info.size, lines, sha256: sha256Text(text) };
+  const rawLines = rawText.split(/\r?\n/g);
+  const loaded = {
+    mtimeMs: info.mtimeMs,
+    size: info.size,
+    rawText,
+    rawLines,
+    redactedLines: buildRedactedLines(rawLines),
+    sha256: sha256Text(rawText),
+  };
   fileCache.set(file, loaded);
   if (fileCache.size > FILE_CACHE_MAX) {
     const oldest = fileCache.keys().next().value;
@@ -367,7 +436,7 @@ function mergeRegions(
   return regions;
 }
 
-export async function searchMemory(
+async function searchMemoryInternal(
   query: string,
   options: {
     limit?: number;
@@ -376,7 +445,7 @@ export async function searchMemory(
     signal?: AbortSignal;
     logger?: MemoryLogger;
   } = {},
-): Promise<SearchHit[]> {
+): Promise<InternalSearchHit[]> {
   const config = options.config ?? {};
   const queryTerms = terms(query);
   options.signal?.throwIfAborted();
@@ -389,7 +458,7 @@ export async function searchMemory(
   const fileSizeLimit = maxFileBytes(config);
   const files = (await Promise.all(allowedRoots(config).map((root) => collectFiles(root, options.logger)))).flat();
 
-  const hits: SearchHit[] = [];
+  const hits: InternalSearchHit[] = [];
   for (let i = 0; i < files.length; i += SCAN_CONCURRENCY) {
     options.signal?.throwIfAborted();
     const batch = files.slice(i, i + SCAN_CONCURRENCY);
@@ -397,37 +466,45 @@ export async function searchMemory(
       options.signal?.throwIfAborted();
       const loaded = await loadFile(file, fileSizeLimit, options.logger);
       if (!loaded) {
-        return [] as SearchHit[];
+        return [] as InternalSearchHit[];
       }
-      const { lines, sha256 } = loaded;
+      const { rawLines, redactedLines, sha256 } = loaded;
       const matches: { index: number; score: number }[] = [];
-      for (let index = 0; index < lines.length; index += 1) {
+      for (let index = 0; index < rawLines.length; index += 1) {
         if (index % 512 === 0) {
           options.signal?.throwIfAborted();
         }
-        const score = scoreLine(lines[index] ?? "", matchers);
+        const score = scoreLine(rawLines[index] ?? "", matchers);
         if (score > 0) {
           matches.push({ index, score });
         }
       }
       if (matches.length === 0) {
-        return [] as SearchHit[];
+        return [] as InternalSearchHit[];
       }
       const sourceId = sourceIdForPath(config, file);
-      return mergeRegions(matches, contextLines, lines.length).map((region) => {
-        const rawSnippet = lines.slice(region.start, region.end + 1).join("\n").slice(0, MAX_SNIPPET_CHARS).trim();
+      return mergeRegions(matches, contextLines, rawLines.length).map((region) => {
+        const rawSnippet = rawLines.slice(region.start, region.end + 1).join("\n").slice(0, MAX_SNIPPET_CHARS).trim();
+        const redactedSnippet = redactedLines
+          .slice(region.start, region.end + 1)
+          .join("\n")
+          .slice(0, MAX_SNIPPET_CHARS)
+          .trim();
         const distinctTerms = matchedTermCount(rawSnippet, matchers);
+        const rawMatchText = (rawLines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim();
         return {
           sourceId,
           path: sourceId,
           lineStart: region.start + 1,
           lineEnd: region.end + 1,
           score: distinctTerms * 100 + Math.min(region.score, 50),
-          snippet: redactSecrets(rawSnippet),
+          snippet: redactedSnippet,
           matchLine: region.anchorIndex + 1,
-          matchText: redactSecrets((lines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim()),
+          matchText: (redactedLines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim(),
           sha256,
-        } satisfies SearchHit;
+          rawSnippet,
+          rawMatchText,
+        } satisfies InternalSearchHit;
       });
     }));
     for (const fileHits of batchHits) {
@@ -440,6 +517,19 @@ export async function searchMemory(
     .slice(0, limit);
   options.logger?.debug?.(`native-memory-citations: scanned ${files.length} files, returned ${sortedHits.length} hits`);
   return sortedHits;
+}
+
+export async function searchMemory(
+  query: string,
+  options: {
+    limit?: number;
+    contextLines?: number;
+    config?: PluginConfig;
+    signal?: AbortSignal;
+    logger?: MemoryLogger;
+  } = {},
+): Promise<SearchHit[]> {
+  return (await searchMemoryInternal(query, options)).map(publicHit);
 }
 
 export async function fetchMemorySource(
@@ -473,15 +563,17 @@ export async function fetchMemorySource(
   if (info.size > fileSizeLimit) {
     throw new Error(`Memory file exceeds maxFileBytes: ${sourceId}`);
   }
-  const text = await readFile(file, "utf8");
-  const sha256 = sha256Text(text);
-  const lines = text.split(/\r?\n/g);
+  const loaded = await loadFile(file, fileSizeLimit);
+  if (!loaded) {
+    throw new Error(`Path is not a readable memory file: ${sourceId}`);
+  }
+  const { rawLines, redactedLines, sha256 } = loaded;
   const requestedStart = Math.max(1, Math.floor(input.lineStart ?? 1));
-  const lineStart = Math.min(lines.length, requestedStart);
-  const requestedEnd = Math.max(1, Math.floor(input.lineEnd ?? lines.length));
-  const lineEnd = Math.min(lines.length, Math.max(lineStart, requestedEnd));
+  const lineStart = Math.min(rawLines.length, requestedStart);
+  const requestedEnd = Math.max(1, Math.floor(input.lineEnd ?? rawLines.length));
+  const lineEnd = Math.min(rawLines.length, Math.max(lineStart, requestedEnd));
   const maxChars = clampInt(input.maxChars, DEFAULT_FETCH_CHARS, 256, MAX_FETCH_CHARS);
-  const content = redactSecrets(lines.slice(lineStart - 1, lineEnd).join("\n").slice(0, maxChars));
+  const content = redactedLines.slice(lineStart - 1, lineEnd).join("\n").slice(0, maxChars);
   const expectedSha256 = input.expectedSha256?.trim().toLowerCase();
   const stale = Boolean(expectedSha256 && expectedSha256 !== sha256);
   return {
@@ -534,7 +626,7 @@ export async function answerFromMemory(
 ): Promise<AnswerResult> {
   const queryTerms = terms(query);
   const matchers = buildMatchers(queryTerms);
-  const hits = await searchMemory(query, {
+  const hits = await searchMemoryInternal(query, {
     limit: options.limit ?? 6,
     contextLines: 2,
     config: options.config,
@@ -543,12 +635,12 @@ export async function answerFromMemory(
   });
 
   const distinctTermsMatched = matchers.filter((matcher) =>
-    hits.some((hit) => matcher.test(hit.snippet.toLowerCase())),
+    hits.some((hit) => matcher.test(hit.rawSnippet.toLowerCase())),
   ).length;
   const requiredDistinctTerms = requiredMatchedTerms(queryTerms);
   const topScore = hits[0]?.score ?? 0;
-  const hasSupportingHit = hits.some((hit) => matchedTermCount(hit.snippet, matchers) >= requiredDistinctTerms);
-  const supportingHits = hits.filter((hit) => matchedTermCount(hit.snippet, matchers) >= requiredDistinctTerms);
+  const supportingHits = hits.filter((hit) => matchedTermCount(hit.rawSnippet, matchers) >= requiredDistinctTerms);
+  const hasSupportingHit = supportingHits.length > 0;
   const confident = hits.length > 0
     && topScore >= ANSWER_MIN_SCORE
     && distinctTermsMatched >= requiredDistinctTerms
@@ -575,7 +667,7 @@ export async function answerFromMemory(
     answer: points.length > 0
       ? points.join("\n")
       : `Found cited memory, but no concise extractive answer could be formed. Start with ${supportingHits[0]?.path}:${supportingHits[0]?.matchLine ?? supportingHits[0]?.lineStart}.`,
-    citations: supportingHits,
+    citations: supportingHits.map(publicHit),
     known: true,
   };
 }
