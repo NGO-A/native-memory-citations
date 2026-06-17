@@ -250,13 +250,15 @@ export async function searchMemory(
     }
     const sourceId = sourceIdForPath(config, file);
     for (const region of mergeRegions(matches, contextLines, lines.length)) {
+      const snippet = lines.slice(region.start, region.end + 1).join("\n").trim();
+      const distinctTerms = matchedTermCount(snippet, queryTerms);
       hits.push({
         sourceId,
         path: sourceId,
         lineStart: region.start + 1,
         lineEnd: region.end + 1,
-        score: region.score,
-        snippet: lines.slice(region.start, region.end + 1).join("\n").trim(),
+        score: distinctTerms * 100 + Math.min(region.score, 50),
+        snippet,
       });
     }
   }
