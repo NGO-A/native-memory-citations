@@ -1,6 +1,7 @@
 # Native Memory Citations
 
 Native OpenClaw plugin for cited local memory search and retrieval.
+Native means OpenClaw-native plugin, not native system memory.
 
 ## Tools
 
@@ -60,19 +61,12 @@ All keys are optional:
 If `workspace` is omitted, the plugin uses `$OPENCLAW_WORKSPACE`, then
 `~/.openclaw/workspace`. There is no hardcoded user-specific default.
 
-## Security Model
-
-- `allowedRoots` is operator configuration and is trusted. A symlinked root is followed.
-- Anything reached by following a symlink out of a root, and any caller-supplied path passed to `native_memory_fetch`, is untrusted. Such targets are resolved with `realpath` and re-checked for containment, so a link planted inside `memory/` that points outside the allowed roots is rejected.
-- Symlinks discovered while walking a directory during search are skipped.
-
 ## Notes
 
 This v1 is intentionally local-file based. It is portable and dependency-light.
 A future version can add vector search while keeping the same public tool names.
-Search is keyword/substring based and re-reads the corpus on each query; for
-large memory trees a future version should add an index/cache and honor
-`context.signal` for mid-search cancellation.
+Search is keyword/substring based with an mtime/size line cache, bounded scan
+concurrency, and `AbortSignal` checks during scan.
 
 ## Install
 
@@ -89,7 +83,8 @@ Reload the Gateway after installing so the plugin host exposes the tools.
 See [SECURITY.md](./SECURITY.md): `allowedRoots` is trusted operator config;
 a symlink that escapes a root, and any caller-supplied fetch path, is untrusted
 and re-checked with `realpath`; symlinks found while walking directories during
-search are skipped.
+search are skipped. Fetch also rejects hidden path segments, non-text files, and
+files larger than `maxFileBytes`.
 
 ## Publish
 

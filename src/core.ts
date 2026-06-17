@@ -51,6 +51,8 @@ const MAX_REGION_LINES = 25;
 const FILE_CACHE_MAX = 512;
 const MAX_LINE_CHARS = 2000;
 const MAX_SNIPPET_CHARS = 4000;
+const DEFAULT_FETCH_CHARS = 8000;
+const MAX_FETCH_CHARS = 20000;
 const SCAN_CONCURRENCY = 8;
 const STOPWORDS = new Set([
   "the",
@@ -109,7 +111,7 @@ const fileCache = new Map<string, CachedFile>();
 
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
   const n = Math.floor(value ?? fallback);
-  if (Number.isNaN(n)) {
+  if (!Number.isFinite(n)) {
     return fallback;
   }
   return Math.min(max, Math.max(min, n));
@@ -169,6 +171,14 @@ export function sourceIdForPath(config: PluginConfig, absolutePath: string): str
 
 export async function pathForSourceId(config: PluginConfig, sourceId: string): Promise<string> {
   return toSafePath(config, sourceId);
+}
+
+function hasHiddenPathSegment(sourceId: string): boolean {
+  return sourceId.split("/").some((segment) => segment.startsWith("."));
+}
+
+function isTextFile(file: string): boolean {
+  return TEXT_EXTENSIONS.has(path.extname(file));
 }
 
 async function collectFiles(root: string, logger?: MemoryLogger): Promise<string[]> {
@@ -388,15 +398,29 @@ export async function fetchMemorySource(
     throw new Error("sourceId or filePath is required");
   }
   const file = await toSafePath(config, requested);
+  const sourceId = sourceIdForPath(config, file);
+  if (hasHiddenPathSegment(sourceId)) {
+    throw new Error(`Path includes a hidden memory segment: ${sourceId}`);
+  }
+  if (!isTextFile(file)) {
+    throw new Error(`Path is not an approved text memory file: ${sourceId}`);
+  }
+  const info = await stat(file).catch(() => null);
+  const maxFileBytes = Math.max(1024, Math.floor(config.maxFileBytes ?? 1024 * 1024));
+  if (!info || !info.isFile()) {
+    throw new Error(`Path is not a readable memory file: ${sourceId}`);
+  }
+  if (info.size > maxFileBytes) {
+    throw new Error(`Memory file exceeds maxFileBytes: ${sourceId}`);
+  }
   const text = await readFile(file, "utf8");
   const lines = text.split(/\r?\n/g);
   const requestedStart = Math.max(1, Math.floor(input.lineStart ?? 1));
   const lineStart = Math.min(lines.length, requestedStart);
   const requestedEnd = Math.max(1, Math.floor(input.lineEnd ?? lines.length));
   const lineEnd = Math.min(lines.length, Math.max(lineStart, requestedEnd));
-  const maxChars = Math.max(256, Math.floor(input.maxChars ?? 8000));
+  const maxChars = clampInt(input.maxChars, DEFAULT_FETCH_CHARS, 256, MAX_FETCH_CHARS);
   const content = lines.slice(lineStart - 1, lineEnd).join("\n").slice(0, maxChars);
-  const sourceId = sourceIdForPath(config, file);
   return {
     sourceId,
     path: sourceId,
@@ -453,9 +477,11 @@ export async function answerFromMemory(
   ).length;
   const requiredDistinctTerms = requiredMatchedTerms(queryTerms);
   const topScore = hits[0]?.score ?? 0;
+  const hasSupportingHit = hits.some((hit) => matchedTermCount(hit.snippet, matchers) >= requiredDistinctTerms);
   const confident = hits.length > 0
     && topScore >= ANSWER_MIN_SCORE
-    && distinctTermsMatched >= requiredDistinctTerms;
+    && distinctTermsMatched >= requiredDistinctTerms
+    && hasSupportingHit;
 
   if (!confident) {
     return {

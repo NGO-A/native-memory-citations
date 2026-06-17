@@ -90,6 +90,44 @@ describe("native memory citations core", () => {
     expect(result.content).toHaveLength(256);
   });
 
+  it("rejects hidden files and directories during fetch", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", ".env"), "SECRET=abc123\n");
+    await mkdir(path.join(workspace, "memory", ".dreams"), { recursive: true });
+    await writeFile(path.join(workspace, "memory", ".dreams", "events.jsonl"), "hidden event\n");
+    await expect(fetchMemorySource({ filePath: "memory/.env" }, { workspace })).rejects.toThrow(/hidden/);
+    await expect(fetchMemorySource({ filePath: "memory/.dreams/events.jsonl" }, { workspace })).rejects.toThrow(/hidden/);
+  });
+
+  it("rejects non-text files during fetch", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "blob.bin"), "binary-ish content\n");
+    await expect(fetchMemorySource({ filePath: "memory/blob.bin" }, { workspace })).rejects.toThrow(/text memory/);
+  });
+
+  it("rejects oversized files during fetch", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "too-big.md"), `${"too-big-token ".repeat(100)}\n`);
+    await expect(
+      fetchMemorySource({ filePath: "memory/too-big.md" }, { workspace, maxFileBytes: 1024 }),
+    ).rejects.toThrow(/maxFileBytes/);
+  });
+
+  it("clamps excessive and non-finite fetch maxChars", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "very-long.md"), `${"x".repeat(25000)}\n`);
+    const capped = await fetchMemorySource(
+      { sourceId: "memory/very-long.md", maxChars: 999999 },
+      { workspace },
+    );
+    expect(capped.content).toHaveLength(20000);
+    const normalized = await fetchMemorySource(
+      { sourceId: "memory/very-long.md", maxChars: Number.POSITIVE_INFINITY },
+      { workspace },
+    );
+    expect(normalized.content).toHaveLength(8000);
+  });
+
   it("answers with citations when memory contains the fact", async () => {
     const workspace = await fixtureWorkspace();
     const result = await answerFromMemory("What should the plugin return?", { config: { workspace } });
@@ -111,6 +149,23 @@ describe("native memory citations core", () => {
     const result = await answerFromMemory("quantum chromodynamics lagrangian", { config: { workspace } });
     expect(result.known).toBe(false);
     expect(result.citations).toHaveLength(0);
+  });
+
+  it("does not claim an answer when required terms are split across files", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "alpha.md"), "alpha only\n");
+    await writeFile(path.join(workspace, "memory", "beta.md"), "beta only\n");
+    const result = await answerFromMemory("alpha beta", { config: { workspace } });
+    expect(result.known).toBe(false);
+    expect(result.citations).toHaveLength(0);
+  });
+
+  it("claims an answer when one hit supports enough query terms", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "alpha-beta.md"), "alpha and beta together\n");
+    const result = await answerFromMemory("alpha beta", { config: { workspace } });
+    expect(result.known).toBe(true);
+    expect(result.answer).toContain("[memory/alpha-beta.md:1]");
   });
 
   it("returns no hits for stopword-only queries", async () => {

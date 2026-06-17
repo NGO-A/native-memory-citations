@@ -17,6 +17,9 @@ boundary is defined as follows:
   re-checks containment against the real roots before reading.
 - **Symlinks encountered while walking directories during search are skipped**,
   so search will not surface content reached through a link.
+- **Fetch applies the same visible text-file boundary as search.** Hidden path
+  segments such as `memory/.env` and `memory/.dreams/events.jsonl` are rejected,
+  and non-text extensions are rejected.
 - Files larger than `maxFileBytes` (default 1 MiB) are skipped. Per-line and
   per-snippet output is length-capped.
 

@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Hardened `native_memory_fetch` so direct fetches cannot bypass search policy
+  for hidden files/directories, non-text files, or files larger than
+  `maxFileBytes`.
+- Capped excessive `maxChars` requests and normalized non-finite fetch limits.
+- Tightened `native_memory_answer` confidence so a query whose required terms
+  are split across separate files returns `known: false` unless one cited hit
+  supports enough terms.
+
 ## [0.1.0] - 2026-06-17
 
 First working release. Provides three agent tools — `native_memory_search`,
