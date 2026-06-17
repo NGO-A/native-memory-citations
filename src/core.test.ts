@@ -63,6 +63,16 @@ describe("native memory citations core", () => {
     expect(hits.some((hit) => hit.path.includes(".dreams"))).toBe(false);
   });
 
+  it("rejects unsafe allowedRoots config entries", async () => {
+    const workspace = await fixtureWorkspace();
+    const unsafeRoots = ["", ".", "..", "../outside", "/tmp", "memory/.dreams", ".secret.md"];
+    for (const root of unsafeRoots) {
+      await expect(searchMemory("native", { config: { workspace, allowedRoots: [root] } })).rejects.toThrow(
+        /Invalid allowedRoots/,
+      );
+    }
+  });
+
   it("caps very dense merged regions", async () => {
     const workspace = await fixtureWorkspace();
     await writeFile(
@@ -174,6 +184,20 @@ describe("native memory citations core", () => {
     ).rejects.toThrow(/maxFileBytes/);
   });
 
+  it("normalizes non-finite maxFileBytes to the default cap", async () => {
+    const workspace = await fixtureWorkspace();
+    const oversized = `oversizedtoken\n${"x".repeat((1024 * 1024) + 1)}\n`;
+    await writeFile(path.join(workspace, "memory", "nan-too-big.md"), oversized);
+    await writeFile(path.join(workspace, "memory", "infinity-too-big.md"), oversized);
+
+    const hits = await searchMemory("oversizedtoken", { config: { workspace, maxFileBytes: Number.NaN } });
+    expect(hits.some((hit) => hit.path === "memory/nan-too-big.md")).toBe(false);
+
+    await expect(
+      fetchMemorySource({ filePath: "memory/infinity-too-big.md" }, { workspace, maxFileBytes: Number.POSITIVE_INFINITY }),
+    ).rejects.toThrow(/maxFileBytes/);
+  });
+
   it("clamps excessive and non-finite fetch maxChars", async () => {
     const workspace = await fixtureWorkspace();
     await writeFile(path.join(workspace, "memory", "very-long.md"), `${"x".repeat(25000)}\n`);
@@ -187,6 +211,39 @@ describe("native memory citations core", () => {
       { workspace },
     );
     expect(normalized.content).toHaveLength(8000);
+  });
+
+  it("redacts secrets from search, fetch, and answer output without changing citation hashes", async () => {
+    const workspace = await fixtureWorkspace();
+    const secretText = [
+      "deploy note OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890",
+      "Bearer abcdefghijklmnopqrstuvwxyz1234567890",
+      "github_pat_abcdefghijklmnopqrstuvwxyz1234567890_ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "-----BEGIN PRIVATE KEY-----",
+      "super-secret-key-material",
+      "-----END PRIVATE KEY-----",
+    ].join("\n");
+    await writeFile(path.join(workspace, "memory", "secret-note.md"), secretText);
+
+    const hits = await searchMemory("deploy note", { config: { workspace }, contextLines: 4 });
+    const hit = hits.find((item) => item.path === "memory/secret-note.md");
+    expect(hit?.sha256).toBe(sha256Text(secretText));
+    expect(hit?.snippet).toContain("OPENAI_API_KEY=[REDACTED]");
+    expect(hit?.snippet).toContain("Bearer [REDACTED]");
+    expect(hit?.snippet).toContain("[REDACTED_GITHUB_TOKEN]");
+    expect(hit?.snippet).toContain("[REDACTED_PRIVATE_KEY]");
+    expect(hit?.snippet).not.toContain("sk-proj-abcdefghijklmnopqrstuvwxyz");
+    expect(hit?.snippet).not.toContain("super-secret-key-material");
+
+    const fetched = await fetchMemorySource({ sourceId: "memory/secret-note.md" }, { workspace });
+    expect(fetched.sha256).toBe(sha256Text(secretText));
+    expect(fetched.content).toContain("OPENAI_API_KEY=[REDACTED]");
+    expect(fetched.content).not.toContain("abcdefghijklmnopqrstuvwxyz1234567890");
+
+    const answer = await answerFromMemory("deploy note", { config: { workspace } });
+    expect(answer.known).toBe(true);
+    expect(answer.answer).toContain("[REDACTED]");
+    expect(answer.answer).not.toContain("sk-proj-abcdefghijklmnopqrstuvwxyz");
   });
 
   it("answers with citations when memory contains the fact", async () => {
@@ -227,6 +284,16 @@ describe("native memory citations core", () => {
     const result = await answerFromMemory("alpha beta", { config: { workspace } });
     expect(result.known).toBe(true);
     expect(result.answer).toContain("[memory/alpha-beta.md:1]");
+  });
+
+  it("returns only supporting citations for a confident answer", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "alpha-only.md"), "alpha only\n");
+    await writeFile(path.join(workspace, "memory", "alpha-beta.md"), "alpha beta together\n");
+    const result = await answerFromMemory("alpha beta", { config: { workspace }, limit: 10 });
+    expect(result.known).toBe(true);
+    expect(result.citations.map((hit) => hit.path)).toContain("memory/alpha-beta.md");
+    expect(result.citations.map((hit) => hit.path)).not.toContain("memory/alpha-only.md");
   });
 
   it("returns no hits for stopword-only queries", async () => {

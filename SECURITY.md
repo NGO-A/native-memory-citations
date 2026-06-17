@@ -10,7 +10,9 @@ This plugin reads local files under operator-configured memory roots. Its
 boundary is defined as follows:
 
 - **`allowedRoots` is trusted.** It is operator configuration. A root that is
-  itself a symlink is followed.
+  itself a symlink is followed. Custom roots must be workspace-relative visible
+  paths; empty roots, `.`, `..`, paths containing `..`, absolute paths, and
+  hidden path segments are rejected.
 - **Anything reached by following a symlink *out of* a root is untrusted.** A
   link planted inside a root that points outside the allowed roots is rejected.
   `native_memory_fetch` resolves caller-supplied paths with `realpath` and
@@ -26,6 +28,9 @@ boundary is defined as follows:
   prior hash as `expectedSha256` to `native_memory_fetch`; if the file changed,
   fetch marks the result stale so agents do not silently trust an old line
   citation against new content.
+- Returned snippets, fetched content, match lines, and extractive answer lines
+  are redacted for common secret patterns before being returned. Redaction does
+  not modify files on disk and does not affect citation hashes.
 
 This plugin does not transmit memory contents anywhere; it only returns cited
 snippets to the calling agent. It performs no network I/O.

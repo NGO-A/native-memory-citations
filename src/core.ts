@@ -58,6 +58,7 @@ const MAX_LINE_CHARS = 2000;
 const MAX_SNIPPET_CHARS = 4000;
 const DEFAULT_FETCH_CHARS = 8000;
 const MAX_FETCH_CHARS = 20000;
+const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const SCAN_CONCURRENCY = 8;
 const STOPWORDS = new Set([
   "the",
@@ -122,6 +123,14 @@ function clampInt(value: number | undefined, fallback: number, min: number, max:
   return Math.min(max, Math.max(min, n));
 }
 
+function maxFileBytes(config: PluginConfig = {}): number {
+  const n = Math.floor(config.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES);
+  if (!Number.isFinite(n)) {
+    return DEFAULT_MAX_FILE_BYTES;
+  }
+  return Math.max(1024, n);
+}
+
 function defaultWorkspace(): string {
   const fromEnv = process.env.OPENCLAW_WORKSPACE?.trim();
   if (fromEnv) {
@@ -141,7 +150,21 @@ export function allowedRoots(config: PluginConfig = {}): string[] {
       ? DEFAULT_SHARED_ROOTS
       : DEFAULT_PRIVATE_ROOTS;
   const workspace = workspaceFromConfig(config);
-  return roots.map((root) => path.resolve(workspace, root));
+  return roots.map((root) => {
+    const trimmed = root.trim();
+    const segments = trimmed.split(/[\\/]+/g);
+    if (
+      !trimmed
+      || trimmed === "."
+      || trimmed === ".."
+      || path.isAbsolute(trimmed)
+      || segments.some((segment) => segment === "..")
+      || segments.some((segment) => segment.startsWith("."))
+    ) {
+      throw new Error(`Invalid allowedRoots entry: ${root}`);
+    }
+    return path.resolve(workspace, trimmed);
+  });
 }
 
 function within(target: string, roots: string[]): boolean {
@@ -188,6 +211,24 @@ function isTextFile(file: string): boolean {
 
 function sha256Text(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+function redactSecrets(text: string): string {
+  return text
+    .replace(
+      /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+      "[REDACTED_PRIVATE_KEY]",
+    )
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*/g, "[REDACTED_PRIVATE_KEY]")
+    .replace(/[\s\S]*-----END [A-Z0-9 ]*PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi, "Bearer [REDACTED]")
+    .replace(/\b(?:sk-proj-|sk-)[A-Za-z0-9_-]{16,}\b/g, "[REDACTED_OPENAI_KEY]")
+    .replace(/\bgh[psuor]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
+    .replace(
+      /\b([A-Za-z0-9_.-]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|CLIENT[_-]?SECRET)[A-Za-z0-9_.-]*\s*[:=]\s*)([^\s"'`]+|"[^"\n]+"|'[^'\n]+')/gi,
+      "$1[REDACTED]",
+    );
 }
 
 async function collectFiles(root: string, logger?: MemoryLogger): Promise<string[]> {
@@ -345,7 +386,7 @@ export async function searchMemory(
   }
   const limit = clampInt(options.limit, 8, 1, 50);
   const contextLines = clampInt(options.contextLines, 2, 0, 8);
-  const maxFileBytes = Math.max(1024, Math.floor(config.maxFileBytes ?? 1024 * 1024));
+  const fileSizeLimit = maxFileBytes(config);
   const files = (await Promise.all(allowedRoots(config).map((root) => collectFiles(root, options.logger)))).flat();
 
   const hits: SearchHit[] = [];
@@ -354,7 +395,7 @@ export async function searchMemory(
     const batch = files.slice(i, i + SCAN_CONCURRENCY);
     const batchHits = await Promise.all(batch.map(async (file) => {
       options.signal?.throwIfAborted();
-      const loaded = await loadFile(file, maxFileBytes, options.logger);
+      const loaded = await loadFile(file, fileSizeLimit, options.logger);
       if (!loaded) {
         return [] as SearchHit[];
       }
@@ -374,17 +415,17 @@ export async function searchMemory(
       }
       const sourceId = sourceIdForPath(config, file);
       return mergeRegions(matches, contextLines, lines.length).map((region) => {
-        const snippet = lines.slice(region.start, region.end + 1).join("\n").slice(0, MAX_SNIPPET_CHARS).trim();
-        const distinctTerms = matchedTermCount(snippet, matchers);
+        const rawSnippet = lines.slice(region.start, region.end + 1).join("\n").slice(0, MAX_SNIPPET_CHARS).trim();
+        const distinctTerms = matchedTermCount(rawSnippet, matchers);
         return {
           sourceId,
           path: sourceId,
           lineStart: region.start + 1,
           lineEnd: region.end + 1,
           score: distinctTerms * 100 + Math.min(region.score, 50),
-          snippet,
+          snippet: redactSecrets(rawSnippet),
           matchLine: region.anchorIndex + 1,
-          matchText: (lines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim(),
+          matchText: redactSecrets((lines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim()),
           sha256,
         } satisfies SearchHit;
       });
@@ -425,11 +466,11 @@ export async function fetchMemorySource(
     throw new Error(`Path is not an approved text memory file: ${sourceId}`);
   }
   const info = await stat(file).catch(() => null);
-  const maxFileBytes = Math.max(1024, Math.floor(config.maxFileBytes ?? 1024 * 1024));
+  const fileSizeLimit = maxFileBytes(config);
   if (!info || !info.isFile()) {
     throw new Error(`Path is not a readable memory file: ${sourceId}`);
   }
-  if (info.size > maxFileBytes) {
+  if (info.size > fileSizeLimit) {
     throw new Error(`Memory file exceeds maxFileBytes: ${sourceId}`);
   }
   const text = await readFile(file, "utf8");
@@ -440,7 +481,7 @@ export async function fetchMemorySource(
   const requestedEnd = Math.max(1, Math.floor(input.lineEnd ?? lines.length));
   const lineEnd = Math.min(lines.length, Math.max(lineStart, requestedEnd));
   const maxChars = clampInt(input.maxChars, DEFAULT_FETCH_CHARS, 256, MAX_FETCH_CHARS);
-  const content = lines.slice(lineStart - 1, lineEnd).join("\n").slice(0, maxChars);
+  const content = redactSecrets(lines.slice(lineStart - 1, lineEnd).join("\n").slice(0, maxChars));
   const expectedSha256 = input.expectedSha256?.trim().toLowerCase();
   const stale = Boolean(expectedSha256 && expectedSha256 !== sha256);
   return {
@@ -507,6 +548,7 @@ export async function answerFromMemory(
   const requiredDistinctTerms = requiredMatchedTerms(queryTerms);
   const topScore = hits[0]?.score ?? 0;
   const hasSupportingHit = hits.some((hit) => matchedTermCount(hit.snippet, matchers) >= requiredDistinctTerms);
+  const supportingHits = hits.filter((hit) => matchedTermCount(hit.snippet, matchers) >= requiredDistinctTerms);
   const confident = hits.length > 0
     && topScore >= ANSWER_MIN_SCORE
     && distinctTermsMatched >= requiredDistinctTerms
@@ -521,10 +563,7 @@ export async function answerFromMemory(
   }
 
   const points: string[] = [];
-  for (const hit of hits.slice(0, 1)) {
-    if (matchedTermCount(hit.snippet, matchers) < requiredDistinctTerms) {
-      continue;
-    }
+  for (const hit of supportingHits.slice(0, 1)) {
     const sentences = extractSentences(hit.snippet, matchers);
     const text = hit.matchText || sentences[0] || hit.snippet.split(/\n+/g).find(Boolean) || "";
     if (text.trim()) {
@@ -535,8 +574,8 @@ export async function answerFromMemory(
   return {
     answer: points.length > 0
       ? points.join("\n")
-      : `Found cited memory, but no concise extractive answer could be formed. Start with ${hits[0]?.path}:${hits[0]?.matchLine ?? hits[0]?.lineStart}.`,
-    citations: hits,
+      : `Found cited memory, but no concise extractive answer could be formed. Start with ${supportingHits[0]?.path}:${supportingHits[0]?.matchLine ?? supportingHits[0]?.lineStart}.`,
+    citations: supportingHits,
     known: true,
   };
 }

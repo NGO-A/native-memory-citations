@@ -23,6 +23,10 @@ Set `sharedMode: true` in plugin config to exclude the private `MEMORY.md` from
 the default root set. Setting `allowedRoots` explicitly overrides the default
 set entirely and supersedes `sharedMode`.
 
+Custom `allowedRoots` entries must be workspace-relative visible paths. Empty
+entries, `.`, `..`, paths containing `..`, absolute paths, and hidden path
+segments such as `memory/.dreams` are rejected.
+
 ## Build, Generate, Validate
 
 The manifest (`openclaw.plugin.json`) is generated from the `defineToolPlugin`
@@ -68,6 +72,12 @@ A future version can add vector search while keeping the same public tool names.
 Search is keyword/substring based with an mtime/size line cache, bounded scan
 concurrency, and `AbortSignal` checks during scan.
 
+Returned snippets, fetched content, match lines, and extractive answers are
+redacted for common secret patterns such as bearer tokens, API keys, GitHub
+tokens, password/secret/token assignment lines, and private key blocks. Redaction
+does not mutate source files and does not affect citation hashes, which are
+computed from original file text.
+
 ## Citation Integrity
 
 Search hits include `sha256`, computed from the full text file used for line
@@ -106,7 +116,8 @@ a symlink that escapes a root, and any caller-supplied fetch path, is untrusted
 and re-checked with `realpath`; symlinks found while walking directories during
 search are skipped. Fetch also rejects hidden path segments, non-text files, and
 files larger than `maxFileBytes`. Citation hashes let callers detect when a
-previous path-and-line citation may now point at changed content.
+previous path-and-line citation may now point at changed content. Returned text
+is redacted for common secret patterns before it leaves the plugin.
 
 ## Publish
 

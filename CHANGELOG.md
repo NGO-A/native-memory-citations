@@ -11,8 +11,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   snapshot citation integrity.
 - Added optional `expectedSha256` support to `native_memory_fetch`; mismatched
   hashes return a stale-citation warning on the fetch result.
+- Added output redaction for common secret patterns across search snippets,
+  match lines, fetched content, and extractive answers.
 
 ### Fixed
+- Rejected unsafe custom `allowedRoots` values including empty entries, `.`,
+  `..`, paths containing `..`, absolute paths, and hidden path segments.
+- Normalized non-finite `maxFileBytes` values to the default cap.
+- Filtered `native_memory_answer` citations to hits that support the required
+  matched-term threshold.
 - Hardened `native_memory_fetch` so direct fetches cannot bypass search policy
   for hidden files/directories, non-text files, or files larger than
   `maxFileBytes`.
