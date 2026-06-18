@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.6
+
+- Build: make the package repository URL exactly match the GitHub repository URL used by npm trusted publishing.
+- Build: update release workflow actions to the current Node 24-compatible major versions.
+- No functional changes.
+
 ## 2026.6.5
 
 - Build: restore npm registry setup in the release workflow so npm CLI can detect the GitHub Actions OIDC publish environment, while still setting no npm auth token.
