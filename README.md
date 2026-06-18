@@ -3,6 +3,8 @@
 Native OpenClaw plugin for cited local memory search and retrieval.
 Native means OpenClaw-native plugin, not native system memory.
 
+![Architecture](docs/architecture.svg)
+
 ## Tools
 
 - `native_memory_search`: search approved memory roots and return snippets with source paths, line numbers, and file SHA-256 hashes.
@@ -48,22 +50,93 @@ npm run plugin:validate
 npm test
 ```
 
-## Config
+## Configuration
 
-Plugin config is read from the plugin's entry in the OpenClaw Gateway config.
-All keys are optional:
+Plugin configuration is supplied in the plugin's entry within the OpenClaw Gateway
+configuration. It governs which files the plugin is permitted to read and cite. The
+plugin reads existing memory files only; it does not create, modify, or delete them.
+All keys are optional.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `workspace` | string | `$OPENCLAW_WORKSPACE`, then `~/.openclaw/workspace` | Absolute path against which roots are resolved. |
+| `allowedRoots` | string[] | Built-in default set (see Default Scope) | Workspace-relative files or directories to search. When set to a non-empty array, it replaces the default set in full. |
+| `sharedMode` | boolean | `false` | When `true`, excludes the private `MEMORY.md` from the default set. Has no effect when `allowedRoots` is set. |
+| `maxFileBytes` | number | `1048576` (1 MiB) | Per-file size limit. Files exceeding this limit are skipped rather than reported as errors. |
+
+### Default search scope
+
+The default roots are defined in the Default Scope section above: `memory/`,
+`MEMORY.md`, `USER.md`, `IDENTITY.md`, and `TOOLS.md`. With `sharedMode: true`,
+`MEMORY.md` is excluded.
+
+### Defining custom roots
+
+Set `allowedRoots` to the exact set of workspace-relative files or directories that
+should be searchable. This value replaces the default set in full and takes
+precedence over `sharedMode`. Any default entries that should remain searchable must
+be listed explicitly.
+
+Each entry must be a workspace-relative, visible path. An entry is rejected, with an
+`Invalid allowedRoots entry` error, if it is empty, `.`, `..`, an absolute path,
+contains a `..` segment, or contains a hidden segment (a segment beginning with `.`,
+for example `memory/.dreams`). These restrictions are part of the access boundary
+and are enforced intentionally.
+
+### Examples
+
+Shared or team deployment, retaining the defaults while excluding the private
+journal:
 
 ```json
-{
-  "workspace": "/home/ad/.openclaw/workspace",
-  "allowedRoots": ["memory", "USER.md", "TOOLS.md"],
-  "sharedMode": true,
-  "maxFileBytes": 1048576
-}
+{ "sharedMode": true }
 ```
 
-If `workspace` is omitted, the plugin uses `$OPENCLAW_WORKSPACE`, then
-`~/.openclaw/workspace`. There is no hardcoded user-specific default.
+Restricting the plugin to a specific, minimal set:
+
+```json
+{ "allowedRoots": ["memory", "USER.md"] }
+```
+
+Adding custom directories. Because `allowedRoots` replaces the default set, any
+defaults that should remain searchable are listed again:
+
+```json
+{ "allowedRoots": ["memory", "USER.md", "IDENTITY.md", "TOOLS.md", "notes", "decisions"] }
+```
+
+Permitting larger files (4 MiB) and specifying a non-default workspace:
+
+```json
+{ "workspace": "/srv/openclaw/workspace", "maxFileBytes": 4194304 }
+```
+
+### Operational notes
+
+- `allowedRoots` replaces the default set; it does not extend it. A value of
+ `["notes"]` makes `MEMORY.md`, `USER.md`, and the remaining defaults unreachable.
+ List every path that should remain searchable.
+- `sharedMode` has no effect once `allowedRoots` is set; the explicit list takes
+ precedence.
+- Files exceeding `maxFileBytes` are skipped and logged rather than reported as
+ errors. Set the limit to accommodate the largest memory files in use.
+- Hidden directories, `..` segments, and absolute paths cannot be included. This is
+ enforced by the access boundary.
+
+### Settings not exposed through configuration
+
+Redaction is implemented in code and is not configurable through plugin
+configuration; the schema rejects unrecognized keys. The named secret patterns and
+the high-entropy backstop are defined in `src/core.ts`. Modifying redaction behavior
+requires editing that file and re-running the test suite (`npm test`) to confirm
+that the redaction invariants continue to hold. It is not a configuration setting in
+this version.
+
+### Per-request limit
+
+`native_memory_fetch` accepts a `maxChars` argument (default `8000`, constrained to
+the range 256 to 20000) that bounds the amount of cited content returned by a single
+fetch. This is a per-call tool argument and is independent of plugin configuration.
 
 ## Notes
 

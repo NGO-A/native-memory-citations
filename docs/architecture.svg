@@ -1,0 +1,113 @@
+<svg viewBox="0 0 920 812" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#8A909C"/>
+    </marker>
+    <style>
+      .title  { font-size: 23px; font-weight: 700; fill: #1A1D24; }
+      .sub    { font-size: 13.5px; fill: #6B7280; }
+      .agent  { font-size: 15px; font-weight: 600; fill: #FFFFFF; }
+      .tool   { font-size: 14px; font-weight: 600; fill: #2B2F38; font-family: ui-monospace, Menlo, Consolas, monospace; }
+      .toolsub{ font-size: 11.5px; fill: #6B7280; }
+      .zlabel { font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em; }
+      .node   { font-size: 13px; fill: #25324A; }
+      .netnode{ font-size: 13px; fill: #5A4416; }
+      .nethead{ font-size: 13px; font-weight: 700; fill: #5A4416; }
+      .read   { font-size: 13.5px; fill: #2B2F38; }
+      .mono   { font-family: ui-monospace, Menlo, Consolas, monospace; }
+      .outk   { font-size: 13.5px; font-weight: 600; fill: #1E5840; }
+      .cap    { font-size: 12px; fill: #6B7280; }
+      .arrow  { stroke: #8A909C; stroke-width: 1.7; fill: none; }
+    </style>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="1" y="1" width="918" height="810" rx="14" fill="#FBFBFD" stroke="#E3E6EB" stroke-width="1.5"/>
+
+  <!-- title -->
+  <text class="title" x="40" y="46">native-memory-citations &#8212; how a cited answer is produced</text>
+  <text class="sub" x="40" y="70">Two independent layers: an access boundary that decides what may be read, and redaction that masks secrets on the way out.</text>
+
+  <!-- agent -->
+  <rect x="340" y="92" width="240" height="46" rx="9" fill="#1A1D24"/>
+  <text class="agent" x="460" y="120" text-anchor="middle">OpenClaw agent / Gateway</text>
+  <line class="arrow" x1="460" y1="138" x2="460" y2="160" marker-end="url(#arrow)"/>
+
+  <!-- tools -->
+  <g>
+    <rect x="65"  y="162" width="250" height="58" rx="9" fill="#F1F3F7" stroke="#C9CFDA"/>
+    <text class="tool" x="190" y="187" text-anchor="middle">native_memory_search</text>
+    <text class="toolsub" x="190" y="206" text-anchor="middle">snippets + path + lines + hash</text>
+
+    <rect x="335" y="162" width="250" height="58" rx="9" fill="#F1F3F7" stroke="#C9CFDA"/>
+    <text class="tool" x="460" y="187" text-anchor="middle">native_memory_fetch</text>
+    <text class="toolsub" x="460" y="206" text-anchor="middle">a cited source by id / path</text>
+
+    <rect x="605" y="162" width="250" height="58" rx="9" fill="#F1F3F7" stroke="#C9CFDA"/>
+    <text class="tool" x="730" y="187" text-anchor="middle">native_memory_answer</text>
+    <text class="toolsub" x="730" y="206" text-anchor="middle">extractive, cited answer</text>
+  </g>
+
+  <!-- merge bus -->
+  <line class="arrow" x1="190" y1="220" x2="190" y2="236"/>
+  <line class="arrow" x1="730" y1="220" x2="730" y2="236"/>
+  <line class="arrow" x1="460" y1="220" x2="460" y2="236"/>
+  <line class="arrow" x1="190" y1="236" x2="730" y2="236"/>
+  <line class="arrow" x1="460" y1="236" x2="460" y2="258" marker-end="url(#arrow)"/>
+
+  <!-- access boundary zone -->
+  <rect x="110" y="260" width="700" height="148" rx="11" fill="#EAF0F9" stroke="#2D4A7C" stroke-width="1.4"/>
+  <text class="zlabel" x="130" y="284" fill="#2D4A7C">1 &#183; ACCESS BOUNDARY &#8212; AUTHORIZATION (THE WALL)</text>
+
+  <g>
+    <rect x="123" y="298" width="158" height="92" rx="8" fill="#FFFFFF" stroke="#B9C6DD"/>
+    <text class="node" x="202" y="338" text-anchor="middle"><tspan x="202">Resolve against</tspan><tspan x="202" dy="17">allowedRoots</tspan><tspan x="202" dy="17" class="cap">trusted operator config</tspan></text>
+
+    <rect x="295" y="298" width="158" height="92" rx="8" fill="#FFFFFF" stroke="#B9C6DD"/>
+    <text class="node" x="374" y="330" text-anchor="middle"><tspan x="374">Reject hidden,</tspan><tspan x="374" dy="17">&#8216;..&#8217;, absolute,</tspan><tspan x="374" dy="17">empty paths</tspan></text>
+
+    <rect x="467" y="298" width="158" height="92" rx="8" fill="#FFFFFF" stroke="#B9C6DD"/>
+    <text class="node" x="546" y="330" text-anchor="middle"><tspan x="546">Symlink / realpath</tspan><tspan x="546" dy="17">escape check</tspan><tspan x="546" dy="17" class="cap">walk-time links skipped</tspan></text>
+
+    <rect x="639" y="298" width="158" height="92" rx="8" fill="#FFFFFF" stroke="#B9C6DD"/>
+    <text class="node" x="718" y="338" text-anchor="middle"><tspan x="718">Text files only</tspan><tspan x="718" dy="17">size &#8804; maxFileBytes</tspan></text>
+
+    <line class="arrow" x1="281" y1="344" x2="295" y2="344" marker-end="url(#arrow)"/>
+    <line class="arrow" x1="453" y1="344" x2="467" y2="344" marker-end="url(#arrow)"/>
+    <line class="arrow" x1="625" y1="344" x2="639" y2="344" marker-end="url(#arrow)"/>
+  </g>
+
+  <line class="arrow" x1="460" y1="408" x2="460" y2="430" marker-end="url(#arrow)"/>
+
+  <!-- read + hash -->
+  <rect x="180" y="432" width="560" height="52" rx="9" fill="#FFFFFF" stroke="#C9CFDA"/>
+  <text class="read" x="460" y="453" text-anchor="middle">Read full file &#8594; SHA-256 of the ORIGINAL text = citation hash</text>
+  <text class="cap" x="460" y="471" text-anchor="middle">computed before redaction, so it never changes when text is masked</text>
+
+  <line class="arrow" x1="460" y1="484" x2="460" y2="506" marker-end="url(#arrow)"/>
+
+  <!-- redaction zone -->
+  <rect x="110" y="508" width="700" height="148" rx="11" fill="#FBF1DE" stroke="#B9770E" stroke-width="1.4"/>
+  <text class="zlabel" x="130" y="532" fill="#9A6310">2 &#183; REDACTION &#8212; DEFENSE&#8209;IN&#8209;DEPTH (THE NET, NOT ACCESS CONTROL)</text>
+
+  <g>
+    <rect x="130" y="546" width="320" height="92" rx="8" fill="#FFFFFF" stroke="#E4C58A"/>
+    <text class="nethead" x="290" y="576" text-anchor="middle">Named secret patterns</text>
+    <text class="netnode" x="290" y="598" text-anchor="middle"><tspan x="290">readable labels: API keys, bearer / JWT,</tspan><tspan x="290" dy="17">cloud keys, key blocks, credential URLs</tspan></text>
+
+    <rect x="470" y="546" width="320" height="92" rx="8" fill="#FFFFFF" stroke="#E4C58A"/>
+    <text class="nethead" x="630" y="576" text-anchor="middle">High-entropy backstop</text>
+    <text class="netnode" x="630" y="598" text-anchor="middle"><tspan x="630">the real catch-all &#8212; any unknown</tspan><tspan x="630" dy="17">long token &#8594; [REDACTED_HIGH_ENTROPY]</tspan></text>
+  </g>
+
+  <line class="arrow" x1="460" y1="656" x2="460" y2="678" marker-end="url(#arrow)"/>
+
+  <!-- output -->
+  <rect x="140" y="680" width="640" height="56" rx="9" fill="#E7F3EC" stroke="#2E7D5B" stroke-width="1.3"/>
+  <text class="outk" x="460" y="704" text-anchor="middle">Cited result &#160; { path, lineStart, lineEnd, sha256 }</text>
+  <text class="outk" x="460" y="724" text-anchor="middle">+ redacted snippet / content / answer</text>
+
+  <!-- caption -->
+  <text class="cap" x="460" y="766" text-anchor="middle">Source files are never modified. The access boundary is what keeps a file unreadable; redaction is a second net, not the boundary.</text>
+  <text class="cap" x="460" y="784" text-anchor="middle">Pass a prior hash as expectedSha256 to fetch and a changed file is flagged stale: true while still returning current content.</text>
+</svg>

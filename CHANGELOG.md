@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 0.1.2
+
+- Documentation: added architecture diagram.
+- Documentation: added a complete configuration reference (keys, defaults, examples, and constraints).
+- No functional changes.
+
 ## 0.1.1
 
 - Docs: Install section now leads with the npm install command.
