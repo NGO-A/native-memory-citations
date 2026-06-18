@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 0.1.4
+
+- Documentation: rewrote the README as a public-facing project description.
+- Documentation: moved build, validation, and release procedure to CONTRIBUTING.md.
+- Documentation: added SECURITY.md with the security model and GitHub private vulnerability reporting path.
+- No functional changes.
+
 ## 0.1.3
 
 - Documentation: use an absolute GitHub image URL so the architecture diagram renders on npm.

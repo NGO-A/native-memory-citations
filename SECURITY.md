@@ -1,49 +1,43 @@
-# Security Policy
+# Security
 
-## Supported versions
+## Security model
 
-The latest published `0.1.x` release receives security fixes.
+Native Memory Citations enforces a two-layer model: an access boundary that
+determines what may be read, and redaction applied to what is returned.
 
-## Trust model
+### Access boundary (authorization)
 
-This plugin reads local files under operator-configured memory roots. Its
-boundary is defined as follows:
+- `allowedRoots` is trusted operator configuration. It defines the only files and
+  directories the plugin may read, resolved relative to the configured workspace.
+- Any caller-supplied fetch path, and any symlink that would escape a root, is
+  treated as untrusted and re-checked with `realpath` before content is read.
+- Symlinks encountered while walking directories during search are skipped.
+- Fetch rejects hidden path segments, non-text files, and files larger than
+  `maxFileBytes`.
+- `allowedRoots` entries that are empty, `.`, `..`, absolute, contain a `..`
+  segment, or contain a hidden segment are rejected.
 
-- **`allowedRoots` is trusted.** It is operator configuration. A root that is
-  itself a symlink is followed. Custom roots must be workspace-relative visible
-  paths; empty roots, `.`, `..`, paths containing `..`, absolute paths, and
-  hidden path segments are rejected.
-- **Anything reached by following a symlink *out of* a root is untrusted.** A
-  link planted inside a root that points outside the allowed roots is rejected.
-  `native_memory_fetch` resolves caller-supplied paths with `realpath` and
-  re-checks containment against the real roots before reading.
-- **Symlinks encountered while walking directories during search are skipped**,
-  so search will not surface content reached through a link.
-- **Fetch applies the same visible text-file boundary as search.** Hidden path
-  segments such as `memory/.env` and `memory/.dreams/events.jsonl` are rejected,
-  and non-text extensions are rejected.
-- Files larger than `maxFileBytes` (default 1 MiB) are skipped. Per-line and
-  per-snippet output is length-capped.
-- Search and fetch results include a full-file SHA-256 hash. Callers can pass a
-  prior hash as `expectedSha256` to `native_memory_fetch`; if the file changed,
-  fetch marks the result stale so agents do not silently trust an old line
-  citation against new content.
-- Returned snippets, fetched content, match lines, and extractive answer lines
-  are redacted before being returned. Named secret patterns are best-effort
-  labels for known formats; sufficiently long high-entropy tokens are masked as
-  the backstop when no named pattern matches. Redaction does not modify files on
-  disk and does not affect citation hashes.
-- Redaction is best-effort defense-in-depth and must not be treated as an
-  authorization or access-control boundary. The access boundary is the approved
-  roots, realpath/symlink containment, hidden-path rejection, file-type filtering,
-  and file-size limits.
+### Redaction (defense-in-depth)
 
-This plugin does not transmit memory contents anywhere; it only returns cited
-snippets to the calling agent. It performs no network I/O.
+- All returned text — search snippets, fetched content, and extractive answers — is
+  redacted before it leaves the plugin.
+- Named secret patterns provide readable labels for common formats (for example API
+  keys, bearer tokens and JWTs, credential URLs, and private key blocks). A
+  high-entropy backstop masks unknown long tokens.
+- Redaction is **not** an authorization or access-control boundary. It lowers the
+  chance of returning a secret that happens to sit inside an authorized file; it
+  does not decide what may be read.
+- Redaction does not modify source files and does not affect citation hashes, which
+  are computed from the original file text.
+
+### Citation integrity
+
+Full-file SHA-256 hashes accompany results so callers can detect when a previous
+path-and-line citation may now point at changed content.
 
 ## Reporting a vulnerability
 
-Report suspected vulnerabilities through the repository's private security
-advisory channel (GitHub → Security → Report a vulnerability) rather than a
-public issue. Include the affected version, a reproduction, and the observed vs.
-expected containment behavior.
+Please report suspected security issues through GitHub private vulnerability
+reporting for this repository rather than in a public issue or pull request.
+
+Until a fix is released, please do not disclose the issue publicly.
