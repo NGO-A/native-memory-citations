@@ -3,7 +3,7 @@
 Native OpenClaw plugin for cited local memory search and retrieval.
 Native means OpenClaw-native plugin, not native system memory.
 
-![Architecture](docs/architecture.svg)
+![Architecture](https://raw.githubusercontent.com/NGO-A/native-memory-citations/v0.1.3/docs/architecture.svg)
 
 ## Tools
 

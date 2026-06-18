@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 0.1.3
+
+- Documentation: use an absolute GitHub image URL so the architecture diagram renders on npm.
+- No functional changes.
+
 ## 0.1.2
 
 - Documentation: added architecture diagram.
