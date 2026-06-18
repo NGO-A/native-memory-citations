@@ -6,9 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.5
+
+- Build: restore npm registry setup in the release workflow so npm CLI can detect the GitHub Actions OIDC publish environment, while still setting no npm auth token.
+- No functional changes.
+
 ## 2026.6.4
 
-- Build: remove `setup-node` npm registry configuration so the release workflow does not inject `NODE_AUTH_TOKEN` and npm can use pure OIDC trusted publishing.
+- Build: remove `setup-node` npm registry configuration while diagnosing the trusted-publishing auth path.
 - Release: corrective publish after the `v2026.6.3` workflow reached npm publish but failed the package upload permission check.
 - No functional changes.
 
