@@ -245,7 +245,7 @@ function shannonEntropy(value: string): number {
 }
 
 function redactHighEntropyTokens(line: string): string {
-  return line.replace(/[A-Za-z0-9_+/=-]{24,}/g, (token) => {
+  return line.replace(/[A-Za-z0-9_+=-]{24,}/g, (token) => {
     if (
       token.length >= HIGH_ENTROPY_TOKEN_MIN_LENGTH
       && shannonEntropy(token) >= HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR

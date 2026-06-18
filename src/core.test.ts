@@ -283,6 +283,25 @@ describe("native memory citations core", () => {
     expect(answer.answer).not.toContain("sk-proj-abcdefghijklmnopqrstuvwxyz");
   });
 
+  it("keeps a normal long file path (does not over-redact it as a high-entropy token)", async () => {
+    const workspace = await fixtureWorkspace();
+    const filePath = "deploy/production-east/configuration/values";
+    await writeFile(
+      path.join(workspace, "memory", "paths.md"),
+      ["# paths", "", `- Config lives at ${filePath} on the cluster.`].join("\n"),
+    );
+
+    const fetched = await fetchMemorySource({ sourceId: "memory/paths.md" }, { workspace });
+    expect(fetched.content).toContain(filePath);
+    expect(fetched.content).not.toContain("[REDACTED_HIGH_ENTROPY]");
+
+    const hits = await searchMemory("Config lives", { config: { workspace }, contextLines: 4 });
+    const hit = hits.find((item) => item.path === "memory/paths.md");
+    expect(hit).toBeDefined();
+    expect(hit?.snippet).toContain(filePath);
+    expect(hit?.snippet).not.toContain("[REDACTED_HIGH_ENTROPY]");
+  });
+
   it("redacts a private-key body line fetched without block markers", async () => {
     const workspace = await fixtureWorkspace();
     await writeFile(
