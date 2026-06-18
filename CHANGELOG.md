@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.2
+
+- Docs: added a Requirements section (Node, OpenClaw peer dependency, supported memory file types).
+- Docs: converted README links to SECURITY.md, CONTRIBUTING.md, CHANGELOG.md, and LICENSE to absolute GitHub URLs so they resolve on the npm page.
+- Docs: moved the Install section higher in the README.
+- No functional changes.
+
 ## 2026.6.1
 
 - Docs: point the README architecture diagram at the `master` branch so it no longer references an old release tag and needs no per-release updates.

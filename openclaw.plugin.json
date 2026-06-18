@@ -30,7 +30,7 @@
     },
     "additionalProperties": false
   },
-  "version": "2026.6.1",
+  "version": "2026.6.2",
   "contracts": {
     "tools": [
       "native_memory_search",

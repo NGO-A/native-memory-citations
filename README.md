@@ -23,6 +23,27 @@ access; it is operator-controlled retrieval with an audit trail.
 - Per-request output limits on fetched content.
 - Read-only operation: the plugin never creates, modifies, or deletes memory files.
 
+## Install
+
+From npm (recommended):
+
+ openclaw plugins install @ngo-a/native-memory-citations
+
+From a local checkout (development):
+
+ openclaw plugins install ./native-memory-citations
+
+Reload the Gateway after installing so the plugin host exposes the tools.
+
+## Requirements
+
+- Node.js 22.19.0 or newer.
+- OpenClaw 2026.5.17 or newer (declared as a peer dependency).
+- A local OpenClaw workspace containing text memory files.
+
+Supported memory file types are `.md`, `.txt`, `.json`, `.jsonl`, `.yaml`, and
+`.yml`. Files with other extensions are not scanned.
+
 ## Intended use
 
 Native Memory Citations is intended for OpenClaw deployments where an agent needs
@@ -118,14 +139,14 @@ Permitting larger files (4 MiB) and specifying a non-default workspace:
 ### Operational notes
 
 - `allowedRoots` replaces the default set; it does not extend it. A value of
-  `["notes"]` makes `MEMORY.md`, `USER.md`, and the remaining defaults unreachable.
-  List every path that should remain searchable.
+ `["notes"]` makes `MEMORY.md`, `USER.md`, and the remaining defaults unreachable.
+ List every path that should remain searchable.
 - `sharedMode` has no effect once `allowedRoots` is set; the explicit list takes
-  precedence.
+ precedence.
 - Files exceeding `maxFileBytes` are skipped and logged rather than reported as
-  errors. Set the limit to accommodate the largest memory files in use.
+ errors. Set the limit to accommodate the largest memory files in use.
 - Hidden directories, `..` segments, and absolute paths cannot be included. This is
-  enforced by the access boundary.
+ enforced by the access boundary.
 
 ### Settings not exposed through configuration
 
@@ -152,10 +173,10 @@ To detect stale citations, pass the hash from a prior search hit:
 
 ```json
 {
-  "sourceId": "memory/2026-06-17.md",
-  "lineStart": 12,
-  "lineEnd": 14,
-  "expectedSha256": "..."
+ "sourceId": "memory/2026-06-17.md",
+ "lineStart": 12,
+ "lineEnd": 14,
+ "expectedSha256": "..."
 }
 ```
 
@@ -180,19 +201,7 @@ long tokens. Redaction is not an authorization or access-control boundary. It do
 not modify source files, and it does not affect citation hashes, which are computed
 from the original file text.
 
-To report a vulnerability, see [SECURITY.md](SECURITY.md).
-
-## Install
-
-From npm (recommended):
-
-    openclaw plugins install @ngo-a/native-memory-citations
-
-From a local checkout (development):
-
-    openclaw plugins install ./native-memory-citations
-
-Reload the Gateway after installing so the plugin host exposes the tools.
+To report a vulnerability, see [SECURITY.md](https://github.com/NGO-A/native-memory-citations/blob/master/SECURITY.md).
 
 ## Implementation notes
 
@@ -204,12 +213,12 @@ concurrency, and `AbortSignal` checks during the scan.
 ## Contributing
 
 Development setup, manifest generation, and the release process are documented in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/NGO-A/native-memory-citations/blob/master/CONTRIBUTING.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/NGO-A/native-memory-citations/blob/master/LICENSE).
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md).
+See [CHANGELOG.md](https://github.com/NGO-A/native-memory-citations/blob/master/CHANGELOG.md).
