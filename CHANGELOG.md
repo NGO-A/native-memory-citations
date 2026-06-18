@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.1
+
+- Docs: point the README architecture diagram at the `master` branch so it no longer references an old release tag and needs no per-release updates.
+- No functional changes.
+
 ## 2026.6.0
 
 - Versioning: adopted calendar versioning (YEAR.MONTH.MICRO) to match OpenClaw, migrating from the 0.x line. See CONTRIBUTING.md.

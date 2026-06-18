@@ -11,7 +11,7 @@ redacts secret-shaped material from what it returns, and attaches citation metad
 so every answer can be traced back to its source. The objective is not broad memory
 access; it is operator-controlled retrieval with an audit trail.
 
-![Architecture](https://raw.githubusercontent.com/NGO-A/native-memory-citations/v0.1.4/docs/architecture.svg)
+![Architecture](https://raw.githubusercontent.com/NGO-A/native-memory-citations/master/docs/architecture.svg)
 
 ## Key capabilities
 
