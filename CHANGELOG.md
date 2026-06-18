@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.0
+
+- Versioning: adopted calendar versioning (YEAR.MONTH.MICRO) to match OpenClaw, migrating from the 0.x line. See CONTRIBUTING.md.
+- Chore: ignore .npmrc to prevent committing npm credentials.
+- No functional changes.
+
 ## 0.1.4
 
 - Documentation: rewrote the README as a public-facing project description.
