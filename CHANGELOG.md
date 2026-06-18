@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.7
+
+- Build: declare OpenClaw plugin API compatibility metadata for ClawHub publishing.
+- No functional changes.
+
 ## 2026.6.6
 
 - Build: make the package repository URL exactly match the GitHub repository URL used by npm trusted publishing.
