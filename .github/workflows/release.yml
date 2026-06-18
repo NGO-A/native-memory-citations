@@ -1,0 +1,42 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write # required for OIDC trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Ensure npm supports trusted publishing (>= 11.5.1)
+        run: npm install -g npm@latest
+
+      - name: Install (locked)
+        run: npm ci
+
+      - name: Build, check manifest, and validate
+        run: |
+          npm run plugin:build:check
+          npx openclaw plugins validate --entry ./dist/index.js
+
+      - name: Test
+        run: npm test
+
+      - name: Publish to npm (OIDC trusted publishing, provenance enabled)
+        run: npm publish
+        # Do NOT add NODE_AUTH_TOKEN or NPM_TOKEN here. OIDC requires that no npm
+        # auth token be present; setting one (even empty) disables OIDC.

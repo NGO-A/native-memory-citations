@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.3
+
+- Build: publish via npm trusted publishing (OIDC) from GitHub Actions; provenance attestations enabled.
+- No functional changes.
+
 ## 2026.6.2
 
 - Docs: added a Requirements section (Node, OpenClaw peer dependency, supported memory file types).
