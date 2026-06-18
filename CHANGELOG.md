@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 0.1.1
+
+- Docs: Install section now leads with the npm install command.
+- Docs: replaced the stale "Publish" section with current "Releasing" steps.
+- No functional changes.
+
 ### Added
 - Added full-file SHA-256 hashes to search hits and fetch results so callers can
   snapshot citation integrity.

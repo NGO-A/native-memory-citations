@@ -107,11 +107,13 @@ earlier citations stale even when the cited lines themselves are unchanged.
 
 ## Install
 
-```bash
-openclaw plugins install ./native-memory-citations # current/private local checkout
-openclaw plugins install clawhub:ngo-a/native-memory-citations # future publish mode
-openclaw plugins install @ngo-a/native-memory-citations # npm publish mode
-```
+From npm (recommended):
+
+ openclaw plugins install @ngo-a/native-memory-citations
+
+From a local checkout (development):
+
+ openclaw plugins install ./native-memory-citations
 
 Reload the Gateway after installing so the plugin host exposes the tools.
 
@@ -127,11 +129,19 @@ is redacted before it leaves the plugin; named secret patterns provide nicer
 labels, while the high-entropy backstop handles unknown token formats. Redaction
 is not an authorization or access-control boundary.
 
-## Publish
+## Releasing
 
-Deferred until distribution mode. When publishing: remove `private`, add the
-`files` allowlist and `prepublishOnly` script, then
-`clawhub package publish ngo-a/native-memory-citations` (or `npm publish`).
+Published to npm as `@ngo-a/native-memory-citations`.
+
+To cut a new release:
+
+1. Make changes and confirm the suite is green: `npm test`
+2. Bump `version` in `package.json` (e.g. `0.1.0` -> `0.1.1`) per semver.
+3. `npm publish`
+
+The `prepublishOnly` script rebuilds `dist/` first, and `publishConfig.access`
+is `public`, so no extra flags are needed. A published version number cannot be
+overwritten; fixes ship as a new version.
 
 ## License
 
