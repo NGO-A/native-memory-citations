@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.4
+
+- Build: remove `setup-node` npm registry configuration so the release workflow does not inject `NODE_AUTH_TOKEN` and npm can use pure OIDC trusted publishing.
+- Release: corrective publish after the `v2026.6.3` workflow reached npm publish but failed the package upload permission check.
+- No functional changes.
+
 ## 2026.6.3
 
 - Build: publish via npm trusted publishing (OIDC) from GitHub Actions; provenance attestations enabled.

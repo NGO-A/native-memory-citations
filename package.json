@@ -1,6 +1,6 @@
 {
   "name": "@ngo-a/native-memory-citations",
-  "version": "2026.6.3",
+  "version": "2026.6.4",
   "type": "module",
   "description": "Native OpenClaw plugin for cited local memory search and retrieval.",
   "license": "MIT",
