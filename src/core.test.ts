@@ -26,6 +26,31 @@ async function fixtureWorkspace(): Promise<string> {
   return workspace;
 }
 
+async function publicOutputsFor(
+  workspace: string,
+  options: {
+    query: string;
+    sourceId: string;
+    lineStart?: number;
+    lineEnd?: number;
+    contextLines?: number;
+  },
+): Promise<string> {
+  const [hits, fetched, answer] = await Promise.all([
+    searchMemory(options.query, { config: { workspace }, contextLines: options.contextLines ?? 2 }),
+    fetchMemorySource(
+      { sourceId: options.sourceId, lineStart: options.lineStart, lineEnd: options.lineEnd },
+      { workspace },
+    ),
+    answerFromMemory(options.query, { config: { workspace } }),
+  ]);
+  return JSON.stringify({ hits, fetched, answer });
+}
+
+function expectNoRawValue(serialized: string, rawValue: string): void {
+  expect(serialized).not.toContain(rawValue);
+}
+
 describe("native memory citations core", () => {
   it("searches memory with line citations", async () => {
     const workspace = await fixtureWorkspace();
@@ -149,6 +174,18 @@ describe("native memory citations core", () => {
     expect(result.lineEnd).toBe(5);
     expect(result.citation).toBe("memory/2026-06-16.md:5");
     expect(result.content).toContain("native_memory_answer");
+  });
+
+  it("normalizes non-finite fetch line ranges", async () => {
+    const workspace = await fixtureWorkspace();
+    const result = await fetchMemorySource(
+      { filePath: "memory/2026-06-16.md", lineStart: Number.NaN, lineEnd: Number.POSITIVE_INFINITY },
+      { workspace },
+    );
+    expect(result.lineStart).toBe(1);
+    expect(result.lineEnd).toBe(5);
+    expect(result.citation).toBe("memory/2026-06-16.md:1");
+    expect(result.content).toContain("# 2026-06-16");
   });
 
   it("truncates fetched content at maxChars", async () => {
@@ -435,6 +472,87 @@ describe("native memory citations core", () => {
     expect(fetched.content).toContain("https://user:[REDACTED]@example.com/path");
     expect(fetched.content).not.toContain("azureAccountSecretValue");
     expect(fetched.content).not.toContain("password123");
+  });
+
+  it("redacts sufficiently long high-entropy tokens without a named pattern", async () => {
+    const workspace = await fixtureWorkspace();
+    const rawToken = "q7Zp9Lm2Va8Wx4Rn6Tc0Yb3Kd5Jf1Hs";
+    await writeFile(path.join(workspace, "memory", "opaque-token.md"), `opaque token ${rawToken}\n`);
+
+    const serialized = await publicOutputsFor(workspace, {
+      query: rawToken,
+      sourceId: "memory/opaque-token.md",
+    });
+    expect(serialized).toContain("[REDACTED_HIGH_ENTROPY]");
+    expectNoRawValue(serialized, rawToken);
+  });
+
+  it("keeps adversarial raw values out of every public output field", async () => {
+    const workspace = await fixtureWorkspace();
+    const fixtures = [
+      {
+        name: "partial private-key lines",
+        sourceId: "memory/adversarial-partial-key.md",
+        query: "AdversarialPartialKeyLineOnly",
+        lineStart: 2,
+        lineEnd: 2,
+        rawValue: "AdversarialPartialKeyLineOnly",
+        content: [
+          "-----BEGIN PRIVATE KEY-----",
+          "AdversarialPartialKeyLineOnly",
+          "-----END PRIVATE KEY-----",
+        ].join("\n"),
+      },
+      {
+        name: "zero-context private-key snippets",
+        sourceId: "memory/adversarial-zero-context.md",
+        query: "ZeroContextPrivateKeyOnlyLine",
+        lineStart: 2,
+        lineEnd: 2,
+        contextLines: 0,
+        rawValue: "ZeroContextPrivateKeyOnlyLine",
+        content: [
+          "-----BEGIN PRIVATE KEY-----",
+          "ZeroContextPrivateKeyOnlyLine",
+          "-----END PRIVATE KEY-----",
+        ].join("\n"),
+      },
+      {
+        name: "rawSnippet and rawMatchText escape",
+        sourceId: "memory/adversarial-raw-fields.md",
+        query: "rawfield",
+        rawValue: "RawFieldSecretValue123456789",
+        content: "rawfield_token: RawFieldSecretValue123456789\n",
+      },
+      {
+        name: "citation offsets",
+        sourceId: "memory/adversarial-offset.md",
+        query: "OffsetSecretValue123456789",
+        lineStart: 2,
+        lineEnd: 2,
+        rawValue: "OffsetSecretValue123456789",
+        content: [
+          "safe line above",
+          "offset_token: OffsetSecretValue123456789",
+          "safe line below",
+        ].join("\n"),
+      },
+      {
+        name: "credential URLs",
+        sourceId: "memory/adversarial-url.md",
+        query: "dbuser",
+        rawValue: "UltraPrivatePassword123!",
+        content: "database_url=https://dbuser:UltraPrivatePassword123!@example.com/prod\n",
+      },
+    ];
+
+    for (const fixture of fixtures) {
+      await writeFile(path.join(workspace, fixture.sourceId), fixture.content);
+      const serialized = await publicOutputsFor(workspace, fixture);
+      expect(serialized, fixture.name).not.toContain("rawSnippet");
+      expect(serialized, fixture.name).not.toContain("rawMatchText");
+      expectNoRawValue(serialized, fixture.rawValue);
+    }
   });
 
   it("answers with citations when memory contains the fact", async () => {

@@ -15,8 +15,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   match lines, fetched content, and extractive answers.
 - Expanded single-line redaction coverage for Azure keys/SAS signatures, AWS
   access key ids, Slack tokens, Google API keys, JWTs, and credential URLs.
+- Added a high-entropy token redaction backstop for unknown long secret formats.
 
 ### Fixed
+- Normalized non-finite `native_memory_fetch` `lineStart` and `lineEnd` values
+  to finite clamped line ranges.
 - Fixed line-range fetch and zero-context search leakage for multi-line
   private-key blocks by using full-file, line-preserving redaction before output
   selection.

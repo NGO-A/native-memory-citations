@@ -60,6 +60,8 @@ const DEFAULT_FETCH_CHARS = 8000;
 const MAX_FETCH_CHARS = 20000;
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const SCAN_CONCURRENCY = 8;
+const HIGH_ENTROPY_TOKEN_MIN_LENGTH = 24;
+const HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR = 4;
 const STOPWORDS = new Set([
   "the",
   "a",
@@ -229,8 +231,33 @@ function isEndMarker(line: string): boolean {
   return /^\s*-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----\s*$/.test(line);
 }
 
+function shannonEntropy(value: string): number {
+  const counts = new Map<string, number>();
+  for (const char of value) {
+    counts.set(char, (counts.get(char) ?? 0) + 1);
+  }
+  let entropy = 0;
+  for (const count of counts.values()) {
+    const p = count / value.length;
+    entropy -= p * Math.log2(p);
+  }
+  return entropy;
+}
+
+function redactHighEntropyTokens(line: string): string {
+  return line.replace(/[A-Za-z0-9_+/=-]{24,}/g, (token) => {
+    if (
+      token.length >= HIGH_ENTROPY_TOKEN_MIN_LENGTH
+      && shannonEntropy(token) >= HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR
+    ) {
+      return "[REDACTED_HIGH_ENTROPY]";
+    }
+    return token;
+  });
+}
+
 function redactSingleLineSecrets(line: string): string {
-  return line
+  return redactHighEntropyTokens(line
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi, "Bearer [REDACTED]")
     .replace(/\b(?:sk-proj-|sk-)[A-Za-z0-9_-]{16,}\b/g, "[REDACTED_OPENAI_KEY]")
     .replace(/\bgh[psuor]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
@@ -245,7 +272,7 @@ function redactSingleLineSecrets(line: string): string {
     .replace(
       /\b([A-Za-z0-9_.-]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|CLIENT[_-]?SECRET)[A-Za-z0-9_.-]*\s*[:=]\s*)([^\s"'`]+|"[^"\n]+"|'[^'\n]+')/gi,
       "$1[REDACTED]",
-    );
+    ));
 }
 
 function buildRedactedLines(rawLines: string[]): string[] {
@@ -568,10 +595,8 @@ export async function fetchMemorySource(
     throw new Error(`Path is not a readable memory file: ${sourceId}`);
   }
   const { rawLines, redactedLines, sha256 } = loaded;
-  const requestedStart = Math.max(1, Math.floor(input.lineStart ?? 1));
-  const lineStart = Math.min(rawLines.length, requestedStart);
-  const requestedEnd = Math.max(1, Math.floor(input.lineEnd ?? rawLines.length));
-  const lineEnd = Math.min(rawLines.length, Math.max(lineStart, requestedEnd));
+  const lineStart = clampInt(input.lineStart, 1, 1, rawLines.length);
+  const lineEnd = clampInt(input.lineEnd, rawLines.length, lineStart, rawLines.length);
   const maxChars = clampInt(input.maxChars, DEFAULT_FETCH_CHARS, 256, MAX_FETCH_CHARS);
   const content = redactedLines.slice(lineStart - 1, lineEnd).join("\n").slice(0, maxChars);
   const expectedSha256 = input.expectedSha256?.trim().toLowerCase();

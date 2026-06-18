@@ -75,11 +75,13 @@ concurrency, and `AbortSignal` checks during scan.
 Returned snippets, fetched content, match lines, and extractive answers are
 redacted for common secret patterns such as bearer tokens, API keys, GitHub
 tokens, password/secret/token assignment lines, credential URLs, JWTs, cloud
-keys, and private key blocks. Redaction is defense-in-depth, not the access
-boundary; the boundary is allowed roots, hidden-path rejection, symlink/realpath
-checks, file-type filtering, and size limits. Redaction does not mutate source
-files and does not affect citation hashes, which are computed from original file
-text.
+keys, and private key blocks. The named pattern list is best-effort labeling,
+not the security boundary; returned text also masks sufficiently long
+high-entropy tokens when no named pattern matches. Redaction is defense-in-depth,
+not the access boundary; the access boundary is allowed roots, hidden-path
+rejection, symlink/realpath checks, file-type filtering, and size limits.
+Redaction does not mutate source files and does not affect citation hashes,
+which are computed from original file text.
 
 ## Citation Integrity
 
@@ -121,8 +123,9 @@ and re-checked with `realpath`; symlinks found while walking directories during
 search are skipped. Fetch also rejects hidden path segments, non-text files, and
 files larger than `maxFileBytes`. Citation hashes let callers detect when a
 previous path-and-line citation may now point at changed content. Returned text
-is redacted for common secret patterns before it leaves the plugin, but
-redaction is not an authorization or access-control boundary.
+is redacted before it leaves the plugin; named secret patterns provide nicer
+labels, while the high-entropy backstop handles unknown token formats. Redaction
+is not an authorization or access-control boundary.
 
 ## Publish
 

@@ -29,8 +29,10 @@ boundary is defined as follows:
   fetch marks the result stale so agents do not silently trust an old line
   citation against new content.
 - Returned snippets, fetched content, match lines, and extractive answer lines
-  are redacted for common secret patterns before being returned. Redaction does
-  not modify files on disk and does not affect citation hashes.
+  are redacted before being returned. Named secret patterns are best-effort
+  labels for known formats; sufficiently long high-entropy tokens are masked as
+  the backstop when no named pattern matches. Redaction does not modify files on
+  disk and does not affect citation hashes.
 - Redaction is best-effort defense-in-depth and must not be treated as an
   authorization or access-control boundary. The access boundary is the approved
   roots, realpath/symlink containment, hidden-path rejection, file-type filtering,
