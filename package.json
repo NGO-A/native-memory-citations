@@ -1,10 +1,12 @@
 {
-  "name": "openclaw-native-memory-citations",
+  "name": "@ngo-a/native-memory-citations",
   "version": "0.1.0",
   "type": "module",
-  "private": true,
   "description": "Native OpenClaw plugin for cited local memory search and retrieval.",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "author": "NGO-A <ngo-a@users.noreply.github.com>",
   "homepage": "https://github.com/NGO-A/native-memory-citations#readme",
   "repository": {
@@ -38,6 +40,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
     "plugin:build": "npm run build && openclaw plugins build --entry ./dist/index.js",
     "plugin:build:check": "npm run build && openclaw plugins build --entry ./dist/index.js --check",
     "plugin:validate": "npm run plugin:build && openclaw plugins validate --entry ./dist/index.js",

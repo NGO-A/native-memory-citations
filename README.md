@@ -110,7 +110,7 @@ earlier citations stale even when the cited lines themselves are unchanged.
 ```bash
 openclaw plugins install ./native-memory-citations # current/private local checkout
 openclaw plugins install clawhub:ngo-a/native-memory-citations # future publish mode
-openclaw plugins install openclaw-native-memory-citations # future npm publish mode
+openclaw plugins install @ngo-a/native-memory-citations # npm publish mode
 ```
 
 Reload the Gateway after installing so the plugin host exposes the tools.
