@@ -286,6 +286,7 @@ pillars - `recall.semantic`, `recall.rerank`, `recall.intentClassifier`,
 | `observations.enabled` | boolean | `false` | Tag per-turn observations. |
 | `observations.model` | string | `"haiku"` | Model used when extraction is on. |
 | `observations.extraction` | boolean | `true` | When `false`, record raw entries with no model call. |
+| `observations.maxBytes` | number | `1048576` | Maximum retained size for `memory/observations.jsonl` in enhanced mode. |
 | `dreaming.autoEnable` | boolean | `true` | In enhanced mode, enable host dreaming if it is off. |
 | `dreaming.enforce` | boolean | `true` | Re-warn at startup if dreaming is disabled in enhanced mode. |
 | `dreaming.blockToolsWhenOff` | boolean | `false` | If `true`, dreaming-dependent tools error instead of degrading when dreaming is off. |

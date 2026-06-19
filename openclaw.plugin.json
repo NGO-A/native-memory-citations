@@ -154,6 +154,10 @@
           "extraction": {
             "type": "boolean",
             "description": "When false, observation tagging uses raw append fallback. Default true."
+          },
+          "maxBytes": {
+            "type": "number",
+            "description": "Maximum retained observations.jsonl size in bytes. Default 1048576."
           }
         },
         "additionalProperties": false

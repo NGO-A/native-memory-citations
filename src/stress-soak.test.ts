@@ -224,12 +224,16 @@ describe("stress gate: enhanced recall and graph load", () => {
 
   it("keeps graph rebuilds idempotent for unchanged inputs", async () => {
     const { workspace } = await seedStressWorkspace();
+    await fsp.writeFile(path.join(workspace, "memory", "graph.jsonl"), "Graph Echo mentions Self Loop.\n");
+    await fsp.writeFile(path.join(workspace, "memory", "observations.jsonl"), "Observation Person works at Derived Co.\n");
     const tools = registerTools(workspace, ENHANCED_CONFIG);
     await callTool(tools, "native_memory_extract", {});
     const first = await fsp.readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
     await callTool(tools, "native_memory_extract", {});
     const second = await fsp.readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
     expect(second).toBe(first);
+    expect(second).not.toContain("Self Loop");
+    expect(second).not.toContain("Derived Co");
   });
 });
 

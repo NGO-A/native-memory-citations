@@ -33,6 +33,7 @@ export type PluginConfig = {
     enabled?: boolean;
     model?: string;
     extraction?: boolean;
+    maxBytes?: number;
   };
   wikiBridge?: {
     enabled?: boolean;
@@ -411,6 +412,11 @@ function graphSourceRoots(config: PluginConfig): string[] {
   return [path.join(workspace, "memory"), path.join(workspace, "MEMORY.md")];
 }
 
+function isDerivedMemoryArtifact(config: PluginConfig, file: string): boolean {
+  const sourceId = sourceIdForPath(config, file);
+  return sourceId === "memory/graph.jsonl" || sourceId === "memory/observations.jsonl";
+}
+
 async function collectFiles(root: string, logger?: MemoryLogger): Promise<string[]> {
   const info = await stat(root).catch(() => null);
   if (!info) {
@@ -753,6 +759,9 @@ export async function extractMemoryGraph(
   const edges: GraphEdge[] = [];
   const seen = new Set<string>();
   for (const file of files.sort()) {
+    if (isDerivedMemoryArtifact(config, file)) {
+      continue;
+    }
     const loaded = await loadFile(file, fileSizeLimit, options.logger);
     if (!loaded) {
       continue;

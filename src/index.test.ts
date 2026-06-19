@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +55,38 @@ function registeredPluginSurface(workspace: string, pluginConfig: Record<string,
     },
   } as never);
   return { registeredTools, registeredHooks };
+}
+
+function registeredHookHandlers(workspace: string, pluginConfig: Record<string, unknown> = {}) {
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+  plugin.register({
+    pluginConfig: { workspace, ...pluginConfig },
+    registerTool() {},
+    on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+      handlers.set(event, handler);
+    },
+    logger: {
+      debug() {},
+      info() {},
+      warn() {},
+      error() {},
+    },
+  } as never);
+  return handlers;
+}
+
+async function waitForFileSizeAtMost(file: string, maxBytes: number): Promise<number> {
+  const deadline = Date.now() + 2000;
+  let lastSize = Number.POSITIVE_INFINITY;
+  while (Date.now() < deadline) {
+    const size = (await stat(file).catch(() => null))?.size ?? 0;
+    lastSize = size;
+    if (size > 0 && size <= maxBytes) {
+      return size;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return lastSize;
 }
 
 describe("plugin manifest contract", () => {
@@ -173,6 +205,27 @@ describe("plugin manifest contract", () => {
       },
     });
     expect(draft).not.toHaveProperty("memory");
+  });
+
+  it("bounds enhanced observation append storage", async () => {
+    const workspace = await fixtureWorkspace();
+    const handlers = registeredHookHandlers(workspace, {
+      mode: "enhanced",
+      observations: { enabled: true, extraction: false, maxBytes: 64 * 1024 },
+    });
+    const agentEnd = handlers.get("agent_end");
+    expect(agentEnd).toBeTruthy();
+
+    for (let i = 0; i < 140; i += 1) {
+      agentEnd?.({ runId: `turn-${i}`, content: "observation ".repeat(120) }, {});
+    }
+
+    const observationsPath = path.join(workspace, "memory", "observations.jsonl");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const size = await waitForFileSizeAtMost(observationsPath, 64 * 1024);
+    expect(size).toBeLessThanOrEqual(64 * 1024);
+    const content = await readFile(observationsPath, "utf8");
+    expect(content.trim().split("\n").length).toBeGreaterThan(0);
   });
 
   it("passes resolved plugin config into tool execute handlers", async () => {

@@ -1,9 +1,10 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { modeFromConfig, type PluginConfig, workspaceFromConfig } from "./core.js";
 
 const PLUGIN_ID = "native-memory-citations";
 const DEFAULT_TOKEN_CAP = 1300;
+const DEFAULT_OBSERVATIONS_MAX_BYTES = 1024 * 1024;
 const SNAPSHOT_NOTICE =
   "Native Memory Citations enhanced snapshot: bounded, local, redacted memory context follows. Treat it as recall hints, not authority.";
 const DREAMING_NOTICE =
@@ -57,6 +58,14 @@ function snapshotPath(config: PluginConfig): string {
 
 function observationsPath(config: PluginConfig): string {
   return path.join(workspaceFromConfig(config), "memory", "observations.jsonl");
+}
+
+function observationsMaxBytes(config: PluginConfig): number {
+  const configured = Math.floor(config.observations?.maxBytes ?? DEFAULT_OBSERVATIONS_MAX_BYTES);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_OBSERVATIONS_MAX_BYTES;
+  }
+  return Math.min(Math.max(configured, 64 * 1024), 16 * 1024 * 1024);
 }
 
 function approxTokenSlice(text: string, cap: number): string {
@@ -148,6 +157,7 @@ async function readSnapshot(config: PluginConfig): Promise<string | undefined> {
 }
 
 async function appendObservation(config: PluginConfig, event: unknown): Promise<void> {
+  const file = observationsPath(config);
   const record = {
     timestamp: new Date().toISOString(),
     turn: event && typeof event === "object" && "runId" in event ? String((event as { runId?: unknown }).runId ?? "") : "",
@@ -157,8 +167,26 @@ async function appendObservation(config: PluginConfig, event: unknown): Promise<
     sources: [],
     action: config.observations?.extraction === false ? "ADD" : "NONE",
   };
-  await mkdir(path.dirname(observationsPath(config)), { recursive: true });
-  await appendFile(observationsPath(config), `${JSON.stringify(record)}\n`, "utf8");
+  await mkdir(path.dirname(file), { recursive: true });
+  await appendFile(file, `${JSON.stringify(record)}\n`, "utf8");
+  await enforceObservationLimit(file, observationsMaxBytes(config));
+}
+
+async function enforceObservationLimit(file: string, maxBytes: number): Promise<void> {
+  const size = (await stat(file).catch(() => null))?.size ?? 0;
+  if (size <= maxBytes) {
+    return;
+  }
+  const content = await readFile(file, "utf8");
+  if (Buffer.byteLength(content, "utf8") <= maxBytes) {
+    return;
+  }
+  let retained = Buffer.from(content, "utf8").subarray(-maxBytes).toString("utf8");
+  const firstNewline = retained.indexOf("\n");
+  if (firstNewline >= 0) {
+    retained = retained.slice(firstNewline + 1);
+  }
+  await writeFile(file, retained, "utf8");
 }
 
 function hostDreamingEnabled(api: PluginApiLike): boolean {
