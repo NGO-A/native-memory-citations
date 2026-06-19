@@ -11,7 +11,7 @@ const DREAMING_NOTICE =
 
 type PluginApiLike = {
   pluginConfig?: PluginConfig;
-  config?: { memory?: { dreaming?: { enabled?: boolean } } };
+  config?: OpenClawConfigLike;
   logger?: {
     debug?: (message: string) => void;
     info?: (message: string) => void;
@@ -28,6 +28,17 @@ type PluginApiLike = {
         mutate: (draft: Record<string, unknown>) => void;
       }) => Promise<unknown>;
     };
+  };
+};
+
+type OpenClawConfigLike = {
+  memory?: { dreaming?: { enabled?: boolean } };
+  plugins?: {
+    entries?: Record<string, {
+      config?: {
+        dreaming?: { enabled?: boolean };
+      };
+    } | unknown>;
   };
 };
 
@@ -66,13 +77,42 @@ function hookOptions(priority: number, timeoutMs: number): unknown {
 }
 
 function registerHook(api: PluginApiLike, event: string, handler: (event: unknown, ctx: unknown) => unknown, opts?: unknown): void {
-  if (typeof api.registerHook === "function") {
-    api.registerHook(event, handler, opts);
-    return;
-  }
   if (typeof api.on === "function") {
     api.on(event, handler, opts);
+    return;
   }
+  if (typeof api.registerHook === "function") {
+    api.registerHook(event, handler, opts);
+  }
+}
+
+function memoryCoreEntry(draft: Record<string, unknown>): Record<string, unknown> {
+  const plugins = typeof draft.plugins === "object" && draft.plugins !== null
+    ? draft.plugins as Record<string, unknown>
+    : {};
+  const entries = typeof plugins.entries === "object" && plugins.entries !== null
+    ? plugins.entries as Record<string, unknown>
+    : {};
+  const entry = typeof entries["memory-core"] === "object" && entries["memory-core"] !== null
+    ? entries["memory-core"] as Record<string, unknown>
+    : {};
+  plugins.entries = entries;
+  entries["memory-core"] = entry;
+  draft.plugins = plugins;
+  return entry;
+}
+
+function setDreamingEnabledOnConfig(draft: Record<string, unknown>): void {
+  const entry = memoryCoreEntry(draft);
+  const config = typeof entry.config === "object" && entry.config !== null
+    ? entry.config as Record<string, unknown>
+    : {};
+  const dreaming = typeof config.dreaming === "object" && config.dreaming !== null
+    ? config.dreaming as Record<string, unknown>
+    : {};
+  dreaming.enabled = true;
+  config.dreaming = dreaming;
+  entry.config = config;
 }
 
 async function buildSnapshot(config: PluginConfig, logger: PluginApiLike["logger"]): Promise<void> {
@@ -122,8 +162,15 @@ async function appendObservation(config: PluginConfig, event: unknown): Promise<
 }
 
 function hostDreamingEnabled(api: PluginApiLike): boolean {
-  const current = typeof api.runtime?.config?.current === "function" ? api.runtime.config.current() : api.config;
-  return (current as { memory?: { dreaming?: { enabled?: boolean } } } | undefined)?.memory?.dreaming?.enabled === true;
+  const current = (typeof api.runtime?.config?.current === "function" ? api.runtime.config.current() : api.config) as OpenClawConfigLike | undefined;
+  if (current?.memory?.dreaming?.enabled === true) {
+    return true;
+  }
+  const memoryCore = current?.plugins?.entries?.["memory-core"];
+  if (memoryCore && typeof memoryCore === "object") {
+    return (memoryCore as { config?: { dreaming?: { enabled?: boolean } } }).config?.dreaming?.enabled === true;
+  }
+  return false;
 }
 
 async function runDreamingGuard(api: PluginApiLike, config: PluginConfig): Promise<void> {
@@ -135,23 +182,13 @@ async function runDreamingGuard(api: PluginApiLike, config: PluginConfig): Promi
   }
   if (config.dreaming?.autoEnable === false || typeof api.runtime?.config?.mutateConfigFile !== "function") {
     api.logger?.warn?.(
-      "native-memory-citations enhanced mode is enabled, but OpenClaw memory.dreaming.enabled is not true.",
+      "native-memory-citations enhanced mode is enabled, but OpenClaw memory-core dreaming is not true.",
     );
     return;
   }
   await api.runtime.config.mutateConfigFile({
     afterWrite: { mode: "auto" },
-    mutate: (draft) => {
-      const memory = typeof draft.memory === "object" && draft.memory !== null
-        ? draft.memory as Record<string, unknown>
-        : {};
-      const dreaming = typeof memory.dreaming === "object" && memory.dreaming !== null
-        ? memory.dreaming as Record<string, unknown>
-        : {};
-      dreaming.enabled = true;
-      memory.dreaming = dreaming;
-      draft.memory = memory;
-    },
+    mutate: setDreamingEnabledOnConfig,
   });
   api.logger?.warn?.(DREAMING_NOTICE);
 }
@@ -201,4 +238,5 @@ export function registerEnhancedLifecycle(api: PluginApiLike): void {
 export const enhancedLifecycleForTest = {
   DREAMING_NOTICE,
   PLUGIN_ID,
+  setDreamingEnabledOnConfig,
 };

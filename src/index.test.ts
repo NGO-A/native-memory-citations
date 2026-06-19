@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { enhancedLifecycleForTest } from "./enhanced.js";
 import plugin from "./index.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -40,8 +41,11 @@ function registeredPluginSurface(workspace: string, pluginConfig: Record<string,
     registerTool(tool: unknown) {
       registeredTools.push(tool as typeof registeredTools[number]);
     },
-    registerHook(events: string | string[]) {
-      registeredHooks.push(...(Array.isArray(events) ? events : [events]));
+    on(event: string) {
+      registeredHooks.push(event);
+    },
+    registerHook() {
+      throw new Error("enhanced lifecycle hooks must use the typed api.on hook surface");
     },
     logger: {
       debug() {},
@@ -140,6 +144,35 @@ describe("plugin manifest contract", () => {
       "cron_changed",
       "session_start",
     ].sort());
+  });
+
+  it("enables host dreaming through the memory-core plugin config path", () => {
+    const draft: Record<string, unknown> = {
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              dreaming: { enabled: false },
+            },
+          },
+        },
+      },
+    };
+
+    enhancedLifecycleForTest.setDreamingEnabledOnConfig(draft);
+
+    expect(draft).toMatchObject({
+      plugins: {
+        entries: {
+          "memory-core": {
+            config: {
+              dreaming: { enabled: true },
+            },
+          },
+        },
+      },
+    });
+    expect(draft).not.toHaveProperty("memory");
   });
 
   it("passes resolved plugin config into tool execute handlers", async () => {

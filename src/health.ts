@@ -22,6 +22,18 @@ type OpenClawLikeConfig = {
   };
 };
 
+function memoryDreamingEnabled(cfg: unknown): boolean {
+  const record = cfg as OpenClawLikeConfig;
+  if (record.memory?.dreaming?.enabled === true) {
+    return true;
+  }
+  const memoryCore = record.plugins?.entries?.["memory-core"];
+  if (memoryCore && typeof memoryCore === "object") {
+    return (memoryCore as { config?: { dreaming?: { enabled?: boolean } } }).config?.dreaming?.enabled === true;
+  }
+  return false;
+}
+
 function pluginConfigFromOpenClawConfig(cfg: unknown): PluginConfig {
   const record = cfg as OpenClawLikeConfig;
   const entry = record.plugins?.entries?.[PLUGIN_ID];
@@ -109,16 +121,15 @@ export function registerNativeMemoryHealthChecks(): void {
       if (modeFromConfig(config) !== "enhanced") {
         return [];
       }
-      const dreamingEnabled = (ctx.cfg as OpenClawLikeConfig).memory?.dreaming?.enabled === true;
-      if (dreamingEnabled) {
+      if (memoryDreamingEnabled(ctx.cfg)) {
         return [];
       }
       return [{
         checkId: "native-memory-citations/dreaming-required",
         severity: config.dreaming?.blockToolsWhenOff ? "error" : "warning",
-        message: "native-memory-citations enhanced mode is enabled but OpenClaw memory.dreaming.enabled is not true.",
+        message: "native-memory-citations enhanced mode is enabled but OpenClaw memory-core dreaming is not true.",
         source: PLUGIN_ID,
-        ocPath: "memory.dreaming.enabled",
+        ocPath: "plugins.entries.memory-core.config.dreaming.enabled",
         fixHint: "Enable OpenClaw dreaming or switch native-memory-citations back to mode: bounded.",
       }];
     },
