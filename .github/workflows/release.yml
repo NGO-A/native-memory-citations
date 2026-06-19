@@ -29,6 +29,18 @@ jobs:
       - name: Install (locked)
         run: npm ci
 
+      - name: Stamp build provenance from the OpenClaw build host
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/node_modules/.bin:$PATH"
+          OCV="$(openclaw --version | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?' | head -n1)"
+          [ -n "$OCV" ] || { echo "::error::could not resolve OpenClaw version"; exit 1; }
+          export OCV
+          SDKV="$(node -p "try{require('@openclaw/plugin-sdk/package.json').version}catch(e){process.env.OCV}")"
+          export SDKV
+          node -e 'const fs=require("fs"),p="package.json",j=JSON.parse(fs.readFileSync(p));j.openclaw.build={openclawVersion:process.env.OCV,pluginSdkVersion:process.env.SDKV};fs.writeFileSync(p,JSON.stringify(j,null,2)+"\n")'
+          echo "stamped build.openclawVersion=$OCV build.pluginSdkVersion=$SDKV"
+
       - name: Build, check manifest, and validate
         run: |
           npm run plugin:build:check

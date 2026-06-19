@@ -6,10 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## 2026.6.7
+## 2026.6.8
 
-- Build: declare OpenClaw plugin API compatibility metadata for ClawHub publishing.
-- No functional changes.
+- Correct packaging metadata: lower `openclaw.compat.pluginApi` floor to `>=2026.5.17`,
+  add `openclaw.compat.minGatewayVersion`, add `openclaw.build.pluginSdkVersion`, and stamp
+  `openclaw.build.openclawVersion`/`pluginSdkVersion` from the actual build host in CI.
+- No runtime or behavior change vs 2026.6.6/2026.6.7.
+
+## 2026.6.7 (superseded - do not use)
+
+- Added OpenClaw `compat`/`build` metadata, but shipped with an incorrect compat floor
+  (`>=2026.6.1`, excluding 2026.5.17-2026.6.0 hosts), a missing `minGatewayVersion`,
+  a missing `build.pluginSdkVersion`, and an untruthful `build.openclawVersion` (`2026.6.8`).
+  Deprecated on npm; superseded by 2026.6.8. No runtime impact.
 
 ## 2026.6.6
 
