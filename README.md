@@ -13,6 +13,25 @@ access; it is operator-controlled retrieval with an audit trail.
 
 ![Architecture](https://raw.githubusercontent.com/NGO-A/native-memory-citations/master/docs/architecture.svg)
 
+## Operating modes
+
+The plugin runs in one of two modes, selected by the `mode` configuration key.
+
+- **`bounded` (default).** The behavior described throughout this README: read-only
+ retrieval, keyword/substring search, extractive cited answers, no network calls, no
+ model calls, and no changes to host configuration. This is what a default install
+ does, and what every guarantee in this document refers to.
+- **`enhanced` (opt-in).** Layers the three pillars of agentic memory - a local
+ knowledge graph, semantic and reranked recall, session-snapshot injection, and
+ observation tagging - on top of the bounded core, reusing the same access boundary,
+ redaction, and citation guarantees. Every enhanced capability is disabled by default
+ even in enhanced mode and is turned on explicitly, per feature.
+
+Leaving configuration at its defaults keeps the plugin in bounded mode; an upgrade
+changes nothing until you opt in. Enhanced-mode capabilities are introduced
+incrementally beginning with the 2026.6.9 release - see
+[Enhanced mode](#enhanced-mode-opt-in).
+
 ## Key capabilities
 
 - Operator-defined search scope, limited to workspace-relative roots.
@@ -27,18 +46,22 @@ access; it is operator-controlled retrieval with an audit trail.
 
 From npm (recommended):
 
- openclaw plugins install @ngo-a/native-memory-citations
+```sh
+openclaw plugins install @ngo-a/native-memory-citations
+```
 
 From a local checkout (development):
 
- openclaw plugins install ./native-memory-citations
+```sh
+openclaw plugins install ./native-memory-citations
+```
 
 Reload the Gateway after installing so the plugin host exposes the tools.
 
 ## Requirements
 
 - Node.js 22.19.0 or newer.
-- OpenClaw 2026.5.17 or newer (declared as a peer dependency).
+- OpenClaw 2026.6.8 or newer (declared as a peer dependency).
 - A local OpenClaw workspace containing text memory files.
 
 Supported memory file types are `.md`, `.txt`, `.json`, `.jsonl`, `.yaml`, and
@@ -53,9 +76,9 @@ identity files, and tool references must be handled within clear boundaries.
 
 ## Tools
 
-- `native_memory_search` — search the approved roots and return snippets with source paths, line numbers, and file SHA-256 hashes.
-- `native_memory_fetch` — fetch a cited source by `sourceId` or a safe path, optionally checking an expected citation hash.
-- `native_memory_answer` — build an extractive answer from cited snippets, and state plainly when no cited memory is found.
+- `native_memory_search` - search the approved roots and return snippets with source paths, line numbers, and file SHA-256 hashes.
+- `native_memory_fetch` - fetch a cited source by `sourceId` or a safe path, optionally checking an expected citation hash.
+- `native_memory_answer` - build an extractive answer from cited snippets, and state plainly when no cited memory is found.
 
 ## Default scope
 
@@ -184,6 +207,95 @@ If the file has changed, fetch still returns the current content for inspection 
 marks the result with `stale: true` and a `staleMessage` explaining the hash
 mismatch. Because hashes cover the full file, appending to a daily journal marks
 earlier citations stale even when the cited lines themselves are unchanged.
+
+## Enhanced mode (opt-in)
+
+Enhanced mode layers the three pillars of agentic memory - storage, injection, and
+recall - on top of the bounded core, while reusing the same access boundary,
+redaction, and citation guarantees. It is opt-in and default-off: setting
+`mode: "enhanced"` turns on the framework, and each pillar is then enabled
+individually. Doing nothing leaves the plugin in bounded mode.
+
+> **Availability (2026.6.9).** Enhanced mode is delivered incrementally. This release
+> ships the bounded-mode guardrails, the enhanced config schema, plugin health checks,
+> the deterministic zero-LLM knowledge-graph sidecar, and the enhanced lifecycle
+> scaffolding. The richer recall, model-based, and wiki pillars - and full runtime
+> dispatch/soak validation of the lifecycle hooks - are still pending (see Forthcoming).
+> On any version, an unset or default configuration behaves exactly as bounded mode.
+
+### What 2026.6.9 ships
+
+- **Bounded mode (default)** - unchanged guardrails and behavior (everything above).
+- **Enhanced config schema + plugin health checks** - all enhanced keys are
+ schema-declared (so `openclaw doctor --fix` will not prune them), and the plugin
+ registers health checks visible to `openclaw doctor`.
+- **Knowledge graph, zero-LLM** (`graph.enabled`). `native_memory_extract` writes typed
+ entity links (for example `works_at`, `invested_in`, `founded`) from your authorized
+ memory files into `memory/graph.jsonl` with no model call; `native_memory_graph`
+ queries it with a hard depth cap and cycle prevention. This pillar is functional in
+ this release.
+- **Enhanced lifecycle scaffolding** (`injection.enabled`, `observations.enabled`,
+ `recall.snapshotFirst`). The code paths are present: `session_start` writes a capped
+ session snapshot, `before_prompt_build` injects it, and `agent_end` appends to
+ `memory/observations.jsonl`. They require their host hook gates
+ (`hooks.allowPromptInjection` for injection, `hooks.allowConversationAccess` for the
+ observation append) and do not run under the `claude-cli` provider. **Runtime hook
+ dispatch and soak validation are still pending - treat these as experimental until
+ validated on the embedded runner.**
+
+### Forthcoming (not in 2026.6.9)
+
+- Semantic recall fusion through the host `memory_search`, RRF reranking, intent
+ classification, and snapshot-first recall inside `native_memory_search` /
+ `native_memory_answer`.
+- Model-based observation extraction (the current path appends without a model) and its
+ fail-open-under-slow-model validation.
+- The `memory-wiki` bridge.
+- External gateway-perf, package-gauntlet, and long-soak validation lanes.
+
+### Dreaming requirement
+
+Enhanced mode builds on OpenClaw's built-in dream cycle (Light -> REM -> Deep
+consolidation), which is **off by default in OpenClaw**. When you enable enhanced
+mode, the plugin enables dreaming for you and prints a notice explaining that it
+*continues* - and does not replace - OpenClaw's dreaming, and that disabling dreaming
+while enhanced mode is on will degrade or silently break these features. Bounded mode
+never touches the dreaming setting. (In `2026.6.9` the guard's code path ships; its
+host-config mutation on real startup is part of the dispatch validation still pending.)
+
+### Configuration (enhanced keys)
+
+All keys default off/false; an absent block means bounded mode. Every key is part of
+the plugin schema, so `openclaw doctor --fix` will not prune it. Keys for forthcoming
+pillars - `recall.semantic`, `recall.rerank`, `recall.intentClassifier`,
+`observations.model` and model-based `observations.extraction`, and `wikiBridge.enabled`
+- are accepted by the schema but have no effect until those pillars ship.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | string | `"bounded"` | `"bounded"` or `"enhanced"`. |
+| `graph.enabled` | boolean | `false` | Enable knowledge-graph extraction and the graph tools. |
+| `graph.edgeTypes` | string[] | built-in set | Typed edges to extract. |
+| `graph.maxDepth` | number | `3` | Hard cap on multi-hop traversal depth. |
+| `recall.semantic` | boolean | `false` | Add semantic retrieval to search/answer. |
+| `recall.rerank` | boolean | `false` | Rerank retrieved results by relevance. |
+| `recall.snapshotFirst` | boolean | `false` | Check the session snapshot before deeper search. |
+| `recall.intentClassifier` | boolean | `false` | Classify query intent to steer retrieval. |
+| `injection.enabled` | boolean | `false` | Inject a capped session snapshot into context. |
+| `injection.tokenCap` | number | `1300` | Maximum tokens injected per session. |
+| `observations.enabled` | boolean | `false` | Tag per-turn observations. |
+| `observations.model` | string | `"haiku"` | Model used when extraction is on. |
+| `observations.extraction` | boolean | `true` | When `false`, record raw entries with no model call. |
+| `dreaming.autoEnable` | boolean | `true` | In enhanced mode, enable host dreaming if it is off. |
+| `dreaming.enforce` | boolean | `true` | Re-warn at startup if dreaming is disabled in enhanced mode. |
+| `dreaming.blockToolsWhenOff` | boolean | `false` | If `true`, dreaming-dependent tools error instead of degrading when dreaming is off. |
+| `wikiBridge.enabled` | boolean | `false` | Enrich a separately installed `memory-wiki` vault, if present. |
+
+### Compatibility
+
+Enhanced mode requires a newer OpenClaw floor than bounded mode; the package declares
+the required version per release. The injection hook is unavailable under the
+`claude-cli` provider, and the plugin reports this rather than failing silently.
 
 ## Security model
 

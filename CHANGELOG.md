@@ -6,6 +6,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.9
+
+- Preserved bounded mode as the default behavior: read-only, keyword/substring search,
+  extractive cited answers, no network/model calls, no host config mutation, and no
+  hook registration unless enhanced mode is explicitly enabled.
+- Added complete default-off enhanced-mode config schema so `openclaw doctor --fix`
+  does not prune the new keys.
+- Added plugin health checks for manifest tool coverage, enhanced-mode dreaming
+  state, and graph sidecar freshness.
+- Added optional `native_memory_graph` and `native_memory_extract` tools for the
+  functional deterministic zero-LLM knowledge graph sidecar. `native_memory_extract`
+  writes `memory/graph.jsonl` only when `mode: "enhanced"` and `graph.enabled: true`;
+  `native_memory_graph` queries it with a depth cap and cycle prevention.
+- Added enhanced lifecycle scaffolding for the dreaming guard, session snapshot
+  refresh, opt-in prompt injection, and fail-open observation appends. Runtime hook
+  dispatch/soak validation on the embedded runner is still pending.
+- Added regression coverage for bounded-mode no-side-effect invariants, graph
+  extraction inertness, depth-capped/cycle-safe graph traversal, and enhanced hook
+  registration.
+- Raised the enhanced release compatibility floor to OpenClaw plugin API/gateway
+  `2026.6.8` and peer dependency `openclaw >=2026.6.8`.
+- Docs: documented bounded vs enhanced operating modes and clearly marked which
+  enhanced capabilities ship in 2026.6.9 versus forthcoming.
+- Forthcoming after 2026.6.9: semantic recall fusion through host `memory_search`,
+  RRF/rerank, intent classification, snapshot-first recall inside
+  `native_memory_search`/`native_memory_answer`, model-based observation extraction,
+  fail-open-under-slow-model proof, the memory-wiki bridge, and external
+  gateway-perf/package-gauntlet/long-soak validation lanes.
+
 ## 2026.6.8
 
 - Correct packaging metadata: lower `openclaw.compat.pluginApi` floor to `>=2026.5.17`,

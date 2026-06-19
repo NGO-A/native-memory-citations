@@ -1,6 +1,6 @@
 {
   "name": "@ngo-a/native-memory-citations",
-  "version": "2026.6.8",
+  "version": "2026.6.9",
   "type": "module",
   "description": "Native OpenClaw plugin for cited local memory search and retrieval.",
   "license": "MIT",
@@ -30,12 +30,12 @@
       "./dist/index.js"
     ],
     "compat": {
-      "pluginApi": ">=2026.5.17",
-      "minGatewayVersion": "2026.5.17"
+      "pluginApi": ">=2026.6.8",
+      "minGatewayVersion": "2026.6.8"
     },
     "build": {
-      "openclawVersion": "2026.5.17",
-      "pluginSdkVersion": "2026.5.17"
+      "openclawVersion": "2026.6.8",
+      "pluginSdkVersion": "2026.6.8"
     }
   },
   "files": [
@@ -53,7 +53,8 @@
     "plugin:build": "npm run build && openclaw plugins build --entry ./dist/index.js",
     "plugin:build:check": "npm run build && openclaw plugins build --entry ./dist/index.js --check",
     "plugin:validate": "npm run plugin:build && openclaw plugins validate --entry ./dist/index.js",
-    "test": "vitest run --dir src --no-file-parallelism"
+    "test": "vitest run --dir src --no-file-parallelism",
+    "test:stress": "vitest run src/bounded-invariants.test.ts src/stress-soak.test.ts --no-file-parallelism"
   },
   "dependencies": {
     "typebox": "1.1.39"
@@ -65,6 +66,6 @@
     "vitest": "^3.2.0"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.5.17"
+    "openclaw": ">=2026.6.8"
   }
 }

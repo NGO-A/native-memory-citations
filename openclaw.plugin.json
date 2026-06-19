@@ -26,16 +26,167 @@
       "maxFileBytes": {
         "type": "number",
         "description": "Per-file size cap in bytes. Files larger than this are skipped. Default 1048576."
+      },
+      "mode": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "bounded"
+          },
+          {
+            "type": "string",
+            "const": "enhanced"
+          }
+        ],
+        "description": "Operating mode. bounded is default and preserves 2026.6.x behavior; enhanced enables explicitly configured pillars."
+      },
+      "dreaming": {
+        "type": "object",
+        "properties": {
+          "autoEnable": {
+            "type": "boolean",
+            "description": "In enhanced mode, allow the dreaming guard to enable OpenClaw dreaming."
+          },
+          "enforce": {
+            "type": "boolean",
+            "description": "In enhanced mode, warn when dreaming-dependent features run without host dreaming."
+          },
+          "blockToolsWhenOff": {
+            "type": "boolean",
+            "description": "In enhanced mode, make dreaming-dependent tools fail hard when dreaming is off."
+          }
+        },
+        "additionalProperties": false
+      },
+      "graph": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable the local zero-LLM graph sidecar tools. Default false."
+          },
+          "edgeTypes": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "works_at"
+                },
+                {
+                  "type": "string",
+                  "const": "invested_in"
+                },
+                {
+                  "type": "string",
+                  "const": "founded"
+                },
+                {
+                  "type": "string",
+                  "const": "advises"
+                },
+                {
+                  "type": "string",
+                  "const": "attended"
+                },
+                {
+                  "type": "string",
+                  "const": "mentions"
+                }
+              ]
+            },
+            "description": "Typed graph edges to extract."
+          },
+          "maxDepth": {
+            "type": "number",
+            "description": "Maximum traversal depth for native_memory_graph. Default 3."
+          }
+        },
+        "additionalProperties": false
+      },
+      "recall": {
+        "type": "object",
+        "properties": {
+          "semantic": {
+            "type": "boolean",
+            "description": "Enhanced mode placeholder for host semantic recall fusion. Default false."
+          },
+          "rerank": {
+            "type": "boolean",
+            "description": "Enhanced mode placeholder for reranking fused candidates. Default false."
+          },
+          "snapshotFirst": {
+            "type": "boolean",
+            "description": "Enhanced mode placeholder for tier-0 snapshot recall. Default false."
+          },
+          "intentClassifier": {
+            "type": "boolean",
+            "description": "Enhanced mode placeholder for intent classification. Default false."
+          }
+        },
+        "additionalProperties": false
+      },
+      "injection": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enhanced mode placeholder for snapshot prompt injection. Default false."
+          },
+          "tokenCap": {
+            "type": "number",
+            "description": "Maximum injected snapshot budget. Default 1300."
+          }
+        },
+        "additionalProperties": false
+      },
+      "observations": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enhanced mode placeholder for observation tagging. Default false."
+          },
+          "model": {
+            "type": "string",
+            "description": "Model profile for observation extraction when enabled. Default haiku."
+          },
+          "extraction": {
+            "type": "boolean",
+            "description": "When false, observation tagging uses raw append fallback. Default true."
+          }
+        },
+        "additionalProperties": false
+      },
+      "wikiBridge": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable optional memory-wiki bridge when present. Default false."
+          }
+        },
+        "additionalProperties": false
       }
     },
     "additionalProperties": false
   },
-  "version": "2026.6.8",
+  "version": "2026.6.9",
   "contracts": {
     "tools": [
       "native_memory_search",
       "native_memory_fetch",
-      "native_memory_answer"
+      "native_memory_answer",
+      "native_memory_graph",
+      "native_memory_extract"
     ]
+  },
+  "toolMetadata": {
+    "native_memory_graph": {
+      "optional": true
+    },
+    "native_memory_extract": {
+      "optional": true
+    }
   }
 }

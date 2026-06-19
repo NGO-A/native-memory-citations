@@ -15,18 +15,42 @@ async function fixtureWorkspace(): Promise<string> {
   return workspace;
 }
 
-function registeredPluginTools(workspace: string) {
+function registeredPluginTools(workspace: string, pluginConfig: Record<string, unknown> = {}) {
   const registeredTools: Array<{
     name: string;
     execute: (toolCallId: string, params: unknown, signal?: AbortSignal) => Promise<unknown>;
   }> = [];
   plugin.register({
-    pluginConfig: { workspace },
+    pluginConfig: { workspace, ...pluginConfig },
     registerTool(tool: unknown) {
       registeredTools.push(tool as typeof registeredTools[number]);
     },
   } as never);
   return registeredTools;
+}
+
+function registeredPluginSurface(workspace: string, pluginConfig: Record<string, unknown> = {}) {
+  const registeredTools: Array<{
+    name: string;
+    execute: (toolCallId: string, params: unknown, signal?: AbortSignal) => Promise<unknown>;
+  }> = [];
+  const registeredHooks: string[] = [];
+  plugin.register({
+    pluginConfig: { workspace, ...pluginConfig },
+    registerTool(tool: unknown) {
+      registeredTools.push(tool as typeof registeredTools[number]);
+    },
+    registerHook(events: string | string[]) {
+      registeredHooks.push(...(Array.isArray(events) ? events : [events]));
+    },
+    logger: {
+      debug() {},
+      info() {},
+      warn() {},
+      error() {},
+    },
+  } as never);
+  return { registeredTools, registeredHooks };
 }
 
 describe("plugin manifest contract", () => {
@@ -37,7 +61,13 @@ describe("plugin manifest contract", () => {
     };
     expect(manifest.id).toBe("native-memory-citations");
     expect([...(manifest.contracts?.tools ?? [])].sort()).toEqual(
-      ["native_memory_answer", "native_memory_fetch", "native_memory_search"].sort(),
+      [
+        "native_memory_answer",
+        "native_memory_extract",
+        "native_memory_fetch",
+        "native_memory_graph",
+        "native_memory_search",
+      ].sort(),
     );
   });
 
@@ -47,8 +77,69 @@ describe("plugin manifest contract", () => {
     };
     const properties = manifest.configSchema?.properties ?? {};
     expect(Object.keys(properties)).toEqual(
-      expect.arrayContaining(["workspace", "allowedRoots", "sharedMode", "maxFileBytes"]),
+      expect.arrayContaining([
+        "workspace",
+        "allowedRoots",
+        "sharedMode",
+        "maxFileBytes",
+        "mode",
+        "dreaming",
+        "graph",
+        "recall",
+        "injection",
+        "observations",
+        "wikiBridge",
+      ]),
     );
+  });
+
+  it("marks enhanced maintenance tools optional in generated metadata", async () => {
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      toolMetadata?: Record<string, { optional?: boolean }>;
+    };
+    expect(manifest.toolMetadata?.native_memory_graph?.optional).toBe(true);
+    expect(manifest.toolMetadata?.native_memory_extract?.optional).toBe(true);
+  });
+
+  it("registers enhanced tools only in enhanced mode", async () => {
+    const workspace = await fixtureWorkspace();
+    const boundedNames = registeredPluginTools(workspace).map((tool) => tool.name).sort();
+    const enhancedNames = registeredPluginTools(workspace, { mode: "enhanced" }).map((tool) => tool.name).sort();
+
+    expect(boundedNames).toEqual(["native_memory_answer", "native_memory_fetch", "native_memory_search"]);
+    expect(enhancedNames).toEqual(
+      [
+        "native_memory_answer",
+        "native_memory_extract",
+        "native_memory_fetch",
+        "native_memory_graph",
+        "native_memory_search",
+      ].sort(),
+    );
+  });
+
+  it("registers enhanced hooks only when enhanced pillars are enabled", async () => {
+    const workspace = await fixtureWorkspace();
+    const bounded = registeredPluginSurface(workspace, {
+      mode: "bounded",
+      injection: { enabled: true },
+      observations: { enabled: true },
+      recall: { snapshotFirst: true },
+    });
+    expect(bounded.registeredHooks).toEqual([]);
+
+    const enhanced = registeredPluginSurface(workspace, {
+      mode: "enhanced",
+      injection: { enabled: true },
+      observations: { enabled: true },
+      recall: { snapshotFirst: true },
+    });
+    expect(enhanced.registeredHooks.sort()).toEqual([
+      "agent_end",
+      "before_prompt_build",
+      "cron_changed",
+      "session_start",
+    ].sort());
   });
 
   it("passes resolved plugin config into tool execute handlers", async () => {

@@ -1,4 +1,4 @@
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +8,69 @@ export type PluginConfig = {
   allowedRoots?: string[];
   sharedMode?: boolean;
   maxFileBytes?: number;
+  mode?: "bounded" | "enhanced";
+  dreaming?: {
+    autoEnable?: boolean;
+    enforce?: boolean;
+    blockToolsWhenOff?: boolean;
+  };
+  graph?: {
+    enabled?: boolean;
+    edgeTypes?: GraphEdgeType[];
+    maxDepth?: number;
+  };
+  recall?: {
+    semantic?: boolean;
+    rerank?: boolean;
+    snapshotFirst?: boolean;
+    intentClassifier?: boolean;
+  };
+  injection?: {
+    enabled?: boolean;
+    tokenCap?: number;
+  };
+  observations?: {
+    enabled?: boolean;
+    model?: string;
+    extraction?: boolean;
+  };
+  wikiBridge?: {
+    enabled?: boolean;
+  };
+};
+
+export type GraphEdgeType = "works_at" | "invested_in" | "founded" | "advises" | "attended" | "mentions";
+
+export type GraphEdge = {
+  from: string;
+  type: GraphEdgeType;
+  to: string;
+  sourceFile: string;
+  sourceLine: number;
+  extractedAt: string;
+};
+
+export type GraphExtractResult = {
+  enabled: boolean;
+  mode: "bounded" | "enhanced";
+  graphPath: string;
+  edgeCount: number;
+  skipped?: string;
+};
+
+export type GraphPath = {
+  nodes: string[];
+  edges: GraphEdge[];
+};
+
+export type GraphQueryResult = {
+  enabled: boolean;
+  mode: "bounded" | "enhanced";
+  query: string;
+  maxDepth: number;
+  edgeCount: number;
+  paths: GraphPath[];
+  skipped?: string;
 };
 
 export type SearchHit = {
@@ -62,6 +125,8 @@ const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const SCAN_CONCURRENCY = 8;
 const HIGH_ENTROPY_TOKEN_MIN_LENGTH = 24;
 const HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR = 4;
+const DEFAULT_GRAPH_EDGE_TYPES: GraphEdgeType[] = ["works_at", "invested_in", "founded", "advises", "attended", "mentions"];
+const GRAPH_EXTRACTED_AT = "1970-01-01T00:00:00.000Z";
 const STOPWORDS = new Set([
   "the",
   "a",
@@ -151,6 +216,27 @@ function defaultWorkspace(): string {
 
 export function workspaceFromConfig(config: PluginConfig = {}): string {
   return path.resolve(config.workspace?.trim() || defaultWorkspace());
+}
+
+export function modeFromConfig(config: PluginConfig = {}): "bounded" | "enhanced" {
+  return config.mode === "enhanced" ? "enhanced" : "bounded";
+}
+
+export function isEnhancedMode(config: PluginConfig = {}): boolean {
+  return modeFromConfig(config) === "enhanced";
+}
+
+export function graphEnabled(config: PluginConfig = {}): boolean {
+  return isEnhancedMode(config) && config.graph?.enabled === true;
+}
+
+function graphPath(config: PluginConfig = {}): string {
+  return path.join(workspaceFromConfig(config), "memory", "graph.jsonl");
+}
+
+function enabledGraphEdgeTypes(config: PluginConfig = {}): Set<GraphEdgeType> {
+  const configured = config.graph?.edgeTypes?.length ? config.graph.edgeTypes : DEFAULT_GRAPH_EDGE_TYPES;
+  return new Set(configured.filter((type): type is GraphEdgeType => DEFAULT_GRAPH_EDGE_TYPES.includes(type)));
 }
 
 export function allowedRoots(config: PluginConfig = {}): string[] {
@@ -318,6 +404,11 @@ function publicHit(hit: InternalSearchHit): SearchHit {
     matchText: hit.matchText,
     sha256: hit.sha256,
   };
+}
+
+function graphSourceRoots(config: PluginConfig): string[] {
+  const workspace = workspaceFromConfig(config);
+  return [path.join(workspace, "memory"), path.join(workspace, "MEMORY.md")];
 }
 
 async function collectFiles(root: string, logger?: MemoryLogger): Promise<string[]> {
@@ -557,6 +648,193 @@ export async function searchMemory(
   } = {},
 ): Promise<SearchHit[]> {
   return (await searchMemoryInternal(query, options)).map(publicHit);
+}
+
+function normalizeEntity(value: string): string {
+  return value
+    .replace(/[`*_()[\]{}]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.,;:!?]+$/g, "")
+    .trim();
+}
+
+function addEdge(
+  edges: GraphEdge[],
+  seen: Set<string>,
+  edge: Omit<GraphEdge, "extractedAt">,
+): void {
+  const normalized = {
+    ...edge,
+    from: normalizeEntity(edge.from),
+    to: normalizeEntity(edge.to),
+    extractedAt: GRAPH_EXTRACTED_AT,
+  };
+  if (!normalized.from || !normalized.to || normalized.from === normalized.to) {
+    return;
+  }
+  const key = `${normalized.from}\0${normalized.type}\0${normalized.to}\0${normalized.sourceFile}\0${normalized.sourceLine}`;
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  edges.push(normalized);
+}
+
+function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: number, allowedTypes: Set<GraphEdgeType>): GraphEdge[] {
+  const edges: GraphEdge[] = [];
+  const seen = new Set<string>();
+  const cleaned = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim();
+  const properNoun = "([A-Z][\\w@.+-]*(?:\\s+[A-Z][\\w@.+-]*){0,5})";
+  const target = "([^.;\\n]{2,120})";
+  const patterns: Array<{ type: GraphEdgeType; re: RegExp }> = [
+    { type: "works_at", re: new RegExp(`${properNoun}\\s+(?:works|worked)\\s+(?:at|for)\\s+${target}`, "i") },
+    { type: "invested_in", re: new RegExp(`${properNoun}\\s+(?:invested in|backs|backed)\\s+${target}`, "i") },
+    { type: "founded", re: new RegExp(`${properNoun}\\s+(?:founded|co-founded|started)\\s+${target}`, "i") },
+    { type: "advises", re: new RegExp(`${properNoun}\\s+(?:advises|advised|mentors|mentor(?:ed)?)\\s+${target}`, "i") },
+    { type: "attended", re: new RegExp(`${properNoun}\\s+(?:attended|went to)\\s+${target}`, "i") },
+    { type: "mentions", re: new RegExp(`${properNoun}\\s+(?:mentions|mentioned|discusses|discussed)\\s+${target}`, "i") },
+  ];
+  for (const pattern of patterns) {
+    if (!allowedTypes.has(pattern.type)) {
+      continue;
+    }
+    const match = cleaned.match(pattern.re);
+    if (match?.[1] && match[2]) {
+      addEdge(edges, seen, { from: match[1], type: pattern.type, to: match[2], sourceFile, sourceLine });
+    }
+  }
+  return edges;
+}
+
+async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {
+  const text = await readFile(graphPath(config), "utf8").catch(() => "");
+  if (!text.trim()) {
+    return [];
+  }
+  const edges: GraphEdge[] = [];
+  for (const line of text.split(/\r?\n/g)) {
+    if (!line.trim()) {
+      continue;
+    }
+    const parsed = JSON.parse(line) as Partial<GraphEdge>;
+    if (
+      typeof parsed.from === "string"
+      && DEFAULT_GRAPH_EDGE_TYPES.includes(parsed.type as GraphEdgeType)
+      && typeof parsed.to === "string"
+      && typeof parsed.sourceFile === "string"
+      && typeof parsed.sourceLine === "number"
+      && typeof parsed.extractedAt === "string"
+    ) {
+      edges.push(parsed as GraphEdge);
+    }
+  }
+  return edges;
+}
+
+export async function extractMemoryGraph(
+  config: PluginConfig = {},
+  options: { logger?: MemoryLogger } = {},
+): Promise<GraphExtractResult> {
+  const mode = modeFromConfig(config);
+  const target = sourceIdForPath(config, graphPath(config));
+  if (!graphEnabled(config)) {
+    return {
+      enabled: false,
+      mode,
+      graphPath: target,
+      edgeCount: 0,
+      skipped: mode === "enhanced" ? "graph.enabled is false" : "mode is bounded",
+    };
+  }
+
+  const allowedTypes = enabledGraphEdgeTypes(config);
+  const fileSizeLimit = maxFileBytes(config);
+  const files = (await Promise.all(graphSourceRoots(config).map((root) => collectFiles(root, options.logger)))).flat();
+  const edges: GraphEdge[] = [];
+  const seen = new Set<string>();
+  for (const file of files.sort()) {
+    const loaded = await loadFile(file, fileSizeLimit, options.logger);
+    if (!loaded) {
+      continue;
+    }
+    const sourceFile = sourceIdForPath(config, file);
+    loaded.rawLines.forEach((line, index) => {
+      for (const edge of extractEdgesFromLine(line, sourceFile, index + 1, allowedTypes)) {
+        addEdge(edges, seen, edge);
+      }
+    });
+  }
+  edges.sort(
+    (a, b) =>
+      a.from.localeCompare(b.from)
+      || a.type.localeCompare(b.type)
+      || a.to.localeCompare(b.to)
+      || a.sourceFile.localeCompare(b.sourceFile)
+      || a.sourceLine - b.sourceLine,
+  );
+  const file = graphPath(config);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${edges.map((edge) => JSON.stringify(edge)).join("\n")}${edges.length ? "\n" : ""}`, "utf8");
+  return { enabled: true, mode, graphPath: target, edgeCount: edges.length };
+}
+
+export async function queryMemoryGraph(
+  query: string,
+  options: { maxDepth?: number; config?: PluginConfig } = {},
+): Promise<GraphQueryResult> {
+  const config = options.config ?? {};
+  const mode = modeFromConfig(config);
+  const maxDepth = clampInt(options.maxDepth ?? config.graph?.maxDepth, 3, 1, 6);
+  if (!graphEnabled(config)) {
+    return {
+      enabled: false,
+      mode,
+      query,
+      maxDepth,
+      edgeCount: 0,
+      paths: [],
+      skipped: mode === "enhanced" ? "graph.enabled is false" : "mode is bounded",
+    };
+  }
+  const edges = await readGraphEdges(config);
+  const q = normalizeEntity(query).toLowerCase();
+  const starts = new Set<string>();
+  for (const edge of edges) {
+    if (edge.from.toLowerCase().includes(q) || edge.to.toLowerCase().includes(q)) {
+      starts.add(edge.from);
+      starts.add(edge.to);
+    }
+  }
+  const adjacency = new Map<string, GraphEdge[]>();
+  for (const edge of edges) {
+    adjacency.set(edge.from, [...(adjacency.get(edge.from) ?? []), edge]);
+    adjacency.set(edge.to, [...(adjacency.get(edge.to) ?? []), { ...edge, from: edge.to, to: edge.from }]);
+  }
+
+  const paths: GraphPath[] = [];
+  const queue: GraphPath[] = Array.from(starts).sort().map((node) => ({ nodes: [node], edges: [] }));
+  const seenPaths = new Set<string>();
+  while (queue.length > 0 && paths.length < 50) {
+    const current = queue.shift()!;
+    if (current.edges.length > 0) {
+      const key = current.nodes.join("\0");
+      if (!seenPaths.has(key)) {
+        seenPaths.add(key);
+        paths.push(current);
+      }
+    }
+    if (current.edges.length >= maxDepth) {
+      continue;
+    }
+    const last = current.nodes[current.nodes.length - 1] ?? "";
+    for (const edge of adjacency.get(last) ?? []) {
+      if (current.nodes.includes(edge.to)) {
+        continue;
+      }
+      queue.push({ nodes: [...current.nodes, edge.to], edges: [...current.edges, edge] });
+    }
+  }
+  return { enabled: true, mode, query, maxDepth, edgeCount: edges.length, paths };
 }
 
 export async function fetchMemorySource(

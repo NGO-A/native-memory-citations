@@ -1,9 +1,16 @@
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { answerFromMemory, fetchMemorySource, searchMemory, toSafePath } from "./core.js";
+import {
+  answerFromMemory,
+  extractMemoryGraph,
+  fetchMemorySource,
+  queryMemoryGraph,
+  searchMemory,
+  toSafePath,
+} from "./core.js";
 
 function sha256Text(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
@@ -62,6 +69,65 @@ describe("native memory citations core", () => {
     expect(hits[0]?.matchLine).toBeLessThanOrEqual(hits[0]?.lineEnd ?? 0);
     expect(hits[0]?.matchText).toContain("native memory");
     expect(hits[0]?.sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("keeps graph extraction inert in bounded mode", async () => {
+    const workspace = await fixtureWorkspace();
+    const result = await extractMemoryGraph({ workspace });
+    expect(result).toMatchObject({
+      enabled: false,
+      mode: "bounded",
+      edgeCount: 0,
+      skipped: "mode is bounded",
+    });
+    await expect(readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8")).rejects.toThrow();
+  });
+
+  it("extracts deterministic graph edges only when enhanced graph mode is enabled", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "graph-source.md"),
+      [
+        "Alice Example works at Native Memory Labs.",
+        "Native Memory Labs mentions Citation Engine.",
+        "Citation Engine advises Alice Example.",
+      ].join("\n"),
+    );
+
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true, maxDepth: 3 } };
+    const first = await extractMemoryGraph(config);
+    const firstText = await readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
+    const second = await extractMemoryGraph(config);
+    const secondText = await readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
+
+    expect(first.enabled).toBe(true);
+    expect(first.edgeCount).toBeGreaterThanOrEqual(3);
+    expect(second.edgeCount).toBe(first.edgeCount);
+    expect(secondText).toBe(firstText);
+    expect(firstText).toContain("\"type\":\"works_at\"");
+    expect(firstText).toContain("\"extractedAt\":\"1970-01-01T00:00:00.000Z\"");
+  });
+
+  it("queries graph paths with depth caps and cycle prevention", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "graph-query.md"),
+      [
+        "Alice Example works at Native Memory Labs.",
+        "Native Memory Labs mentions Citation Engine.",
+        "Citation Engine advises Alice Example.",
+      ].join("\n"),
+    );
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true, maxDepth: 3 } };
+    await extractMemoryGraph(config);
+    const result = await queryMemoryGraph("Alice Example", { config, maxDepth: 3 });
+
+    expect(result.enabled).toBe(true);
+    expect(result.paths.length).toBeGreaterThan(0);
+    for (const graphPath of result.paths) {
+      expect(new Set(graphPath.nodes).size).toBe(graphPath.nodes.length);
+      expect(graphPath.edges.length).toBeLessThanOrEqual(3);
+    }
   });
 
   it("hashes the complete searched file content", async () => {

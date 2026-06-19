@@ -1,0 +1,22 @@
+{
+  "recallConcurrency": {
+    "parallelCalls": 60,
+    "p95LatencyMs": 2000,
+    "maxErrors": 0
+  },
+  "graph": {
+    "maxQueryMs": 2000,
+    "maxDepth": 3,
+    "maxReturnedPaths": 50
+  },
+  "boundary": {
+    "parallelAttemptsPerCase": 20,
+    "secretLeakBudget": 0,
+    "boundaryEscapeBudget": 0
+  },
+  "boundedUnderStress": {
+    "parallelCalls": 60,
+    "secretLeakBudget": 0,
+    "fileMutationBudget": 0
+  }
+}

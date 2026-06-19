@@ -35,9 +35,87 @@ determines what may be read, and redaction applied to what is returned.
 Full-file SHA-256 hashes accompany results so callers can detect when a previous
 path-and-line citation may now point at changed content.
 
+## Operating modes and security posture
+
+The plugin runs in `bounded` mode by default and in `enhanced` mode only when an
+operator opts in. The two-layer model above applies in both modes; the surfaces each
+mode exposes differ.
+
+### Bounded mode (default)
+
+Bounded mode is the behavior described in full above. It is read-only, makes no
+network calls, makes no model calls, registers no hooks, and never changes host
+configuration. These properties are enforced by regression tests that gate every
+release: a bounded-mode install must perform no file writes, no network calls, no
+model calls, and no hook registration, and must not modify the host dreaming setting.
+A default upgrade therefore preserves the externally observable behavior of the prior
+release.
+
+### Enhanced mode (opt-in)
+
+Enhanced mode adds capabilities that introduce new surfaces. Each is off by default
+and individually gated, and the access boundary, redaction, and full-file SHA-256
+citation path are the same audited code in both modes.
+
+- **Local writes.** The knowledge-graph and observation features write derived files
+  (`memory/graph.jsonl`, `memory/observations.jsonl`) inside the workspace. They are
+  derived from already-authorized memory files and never overwrite host memory files
+  (`MEMORY.md`, daily notes, `DREAMS.md`). Graph extraction uses no model.
+- **Optional model call.** Observation tagging can summarize a turn with a model. This
+  is off by default even in enhanced mode; when enabled, turn content is sent to the
+  configured model (a privacy consideration), and the work runs asynchronously and
+  fail-open so it never blocks or alters a turn.
+- **Context injection.** Snapshot injection adds capped memory to the model's context
+  through a prompt-build hook. It requires the host to explicitly allow prompt
+  injection for this plugin and does not run under the `claude-cli` provider.
+- **Host configuration.** Enhanced mode depends on OpenClaw's dream cycle and will
+  enable it, with an explicit notice. This is a host-configuration change; bounded
+  mode never makes it.
+
+Enhanced retrieval answers remain subject to the same access boundary, redaction, and
+citation guarantees as bounded answers.
+
 ## Reporting a vulnerability
 
-Please report suspected security issues through GitHub private vulnerability
-reporting for this repository rather than in a public issue or pull request.
+Report suspected vulnerabilities privately through GitHub's private vulnerability
+reporting: open the repository's **Security** tab and use **Report a vulnerability**
+(GitHub Security Advisories). Reports stay private to the maintainers — there is no
+email address to expose or monitor, and reporting requires a GitHub account.
 
-Until a fix is released, please do not disclose the issue publicly.
+Do not open a public issue or pull request that discloses an unpatched vulnerability,
+exploit path, or secret. Public disclosures may be closed or hidden and redirected to
+the private process so the issue can be fixed before it becomes an attack recipe.
+Please keep the issue private until a fix is released.
+
+This is a best-effort open-source project with no paid bug bounty. High-signal
+reports — and, where practical, a focused fix — are the most useful contribution.
+
+### Scope and trust model
+
+The plugin is read-only by default and is built for a trusted operator who controls
+which workspace files it may read. Reports are evaluated against that access boundary.
+The following are by design and are **not**, on their own, vulnerabilities:
+
+- **A redaction miss.** Redaction is defense-in-depth, not an access-control boundary.
+  A secret returned from a file the operator authorized is a redaction gap to harden,
+  not a boundary bypass.
+- **Operator configuration.** Granting `allowedRoots` access to files that were not
+  intended, or disabling protections, is configuration — not a plugin flaw.
+- **Opt-in enhanced-mode behavior** the operator explicitly enabled (knowledge graph,
+  injection, observation tagging, dreaming) behaving as documented.
+- **Scanner-only or dependency-only findings** without a working reproduction that
+  demonstrates impact against this plugin.
+
+A genuine vulnerability is reading or returning content **outside** the configured
+`allowedRoots` — for example a symlink, `..`, or path-traversal escape, a
+hidden-segment or non-text bypass of the fetch checks, or a defeat of the workspace
+resolution — shown with a concrete reproduction.
+
+### What a useful report contains
+
+- The exact path: file, function, and line range on a current revision.
+- A tested, minimal reproduction (the configuration plus the call that crosses the boundary).
+- The demonstrated impact: what was read or returned that should not have been.
+- Remediation advice, if you have it.
+
+Reports without a reproduction and demonstrated impact are deprioritized.
