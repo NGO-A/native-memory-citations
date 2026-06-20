@@ -149,7 +149,7 @@
           },
           "model": {
             "type": "string",
-            "description": "Model profile for observation extraction when enabled. Default haiku."
+            "description": "Optional host model profile for future observation extraction. When omitted, use the host configured summarization or fast model."
           },
           "extraction": {
             "type": "boolean",

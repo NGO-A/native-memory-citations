@@ -237,9 +237,11 @@ individually. Doing nothing leaves the plugin in bounded mode.
 - **Enhanced lifecycle scaffolding** (`injection.enabled`, `observations.enabled`,
  `recall.snapshotFirst`). The code paths are present: `session_start` writes a capped
  session snapshot, `before_prompt_build` injects it, and `agent_end` appends to
- `memory/observations.jsonl`. They require their host hook gates
+ `memory/observations.jsonl` within `observations.maxBytes`. They require their host hook gates
  (`hooks.allowPromptInjection` for injection, `hooks.allowConversationAccess` for the
- observation append) and do not run under the `claude-cli` provider. **Runtime hook
+ observation append). On external-CLI runners or any other harness where in-process
+ lifecycle hooks do not dispatch, these hook-dependent features degrade cleanly: the
+ turn is unaffected and the three core cited-memory tools still work. **Runtime hook
  dispatch and soak validation are still pending - treat these as experimental until
  validated on the embedded runner.**
 
@@ -249,7 +251,8 @@ individually. Doing nothing leaves the plugin in bounded mode.
  classification, and snapshot-first recall inside `native_memory_search` /
  `native_memory_answer`.
 - Model-based observation extraction (the current path appends without a model) and its
- fail-open-under-slow-model validation.
+ fail-open-under-slow-model validation. When it ships, the default will use the
+ host's configured summarization/fast model, not a provider-specific model name.
 - The `memory-wiki` bridge.
 - External gateway-perf, package-gauntlet, and long-soak validation lanes.
 
@@ -269,7 +272,10 @@ All keys default off/false; an absent block means bounded mode. Every key is par
 the plugin schema, so `openclaw doctor --fix` will not prune it. Keys for forthcoming
 pillars - `recall.semantic`, `recall.rerank`, `recall.intentClassifier`,
 `observations.model` and model-based `observations.extraction`, and `wikiBridge.enabled`
-- are accepted by the schema but have no effect until those pillars ship.
+- are accepted by the schema but have no effect until those pillars ship. Omit
+`observations.model` to use the host's configured summarization/fast model when
+model-based extraction is implemented; if no host model is available, observation
+tagging falls back to the no-model append path.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -284,7 +290,7 @@ pillars - `recall.semantic`, `recall.rerank`, `recall.intentClassifier`,
 | `injection.enabled` | boolean | `false` | Inject a capped session snapshot into context. |
 | `injection.tokenCap` | number | `1300` | Maximum tokens injected per session. |
 | `observations.enabled` | boolean | `false` | Tag per-turn observations. |
-| `observations.model` | string | `"haiku"` | Model used when extraction is on. |
+| `observations.model` | string | host default | Optional model profile for future extraction; when omitted, use the host's configured summarization/fast model. |
 | `observations.extraction` | boolean | `true` | When `false`, record raw entries with no model call. |
 | `observations.maxBytes` | number | `1048576` | Maximum retained size for `memory/observations.jsonl` in enhanced mode. |
 | `dreaming.autoEnable` | boolean | `true` | In enhanced mode, enable host dreaming if it is off. |
@@ -295,8 +301,9 @@ pillars - `recall.semantic`, `recall.rerank`, `recall.intentClassifier`,
 ### Compatibility
 
 Enhanced mode requires a newer OpenClaw floor than bounded mode; the package declares
-the required version per release. The injection hook is unavailable under the
-`claude-cli` provider, and the plugin reports this rather than failing silently.
+the required version per release. Hook-dependent features require a host harness that
+dispatches in-process lifecycle hooks; external CLI runners and other non-dispatching
+harnesses keep the core tools working and simply do not run those enhanced hooks.
 
 ## Security model
 

@@ -22,6 +22,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added enhanced lifecycle scaffolding for the dreaming guard, session snapshot
   refresh, opt-in prompt injection, and fail-open observation appends. Runtime hook
   dispatch/soak validation on the embedded runner is still pending.
+- Added `observations.maxBytes` to bound the enhanced observation append sidecar and
+  made graph extraction ignore plugin-derived sidecars during rebuilds.
+- Made enhanced lifecycle documentation and tests provider-neutral: non-dispatching
+  external runners leave hook-dependent behavior inactive while the three core tools
+  continue to work.
 - Added regression coverage for bounded-mode no-side-effect invariants, graph
   extraction inertness, depth-capped/cycle-safe graph traversal, and enhanced hook
   registration.
@@ -31,7 +36,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   enhanced capabilities ship in 2026.6.9 versus forthcoming.
 - Forthcoming after 2026.6.9: semantic recall fusion through host `memory_search`,
   RRF/rerank, intent classification, snapshot-first recall inside
-  `native_memory_search`/`native_memory_answer`, model-based observation extraction,
+  `native_memory_search`/`native_memory_answer`, model-agnostic observation extraction
+  through the host's configured summarization/fast model,
   fail-open-under-slow-model proof, the memory-wiki bridge, and external
   gateway-perf/package-gauntlet/long-soak validation lanes.
 

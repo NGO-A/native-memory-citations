@@ -72,7 +72,7 @@ const configSchema = Type.Object(
     }, { additionalProperties: false })),
     observations: Type.Optional(Type.Object({
       enabled: Type.Optional(Type.Boolean({ description: "Enhanced mode placeholder for observation tagging. Default false." })),
-      model: Type.Optional(Type.String({ description: "Model profile for observation extraction when enabled. Default haiku." })),
+      model: Type.Optional(Type.String({ description: "Optional host model profile for future observation extraction. When omitted, use the host configured summarization or fast model." })),
       extraction: Type.Optional(Type.Boolean({ description: "When false, observation tagging uses raw append fallback. Default true." })),
       maxBytes: Type.Optional(Type.Number({ description: "Maximum retained observations.jsonl size in bytes. Default 1048576." })),
     }, { additionalProperties: false })),

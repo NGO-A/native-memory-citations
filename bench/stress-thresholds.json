@@ -18,5 +18,15 @@
     "parallelCalls": 60,
     "secretLeakBudget": 0,
     "fileMutationBudget": 0
+  },
+  "gatewayStartup": {
+    "readyzP50RegressionPctBudget": 5,
+    "maxRssP50RegressionPctBudget": 10,
+    "runtimePostBindTotalMs": {
+      "boundedP50ObservedMs": 489.3,
+      "enhancedP50ObservedMs": 1026,
+      "enhancedP50BudgetMs": 1100,
+      "disposition": "accepted-mode-aware-budget"
+    }
   }
 }

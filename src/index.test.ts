@@ -178,6 +178,41 @@ describe("plugin manifest contract", () => {
     ].sort());
   });
 
+  it("keeps core tools working when enhanced hooks never fire", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "MEMORY.md"), "harness neutral recall fact\n");
+    const surface = registeredPluginSurface(workspace, {
+      mode: "enhanced",
+      graph: { enabled: true },
+      injection: { enabled: true },
+      observations: { enabled: true, extraction: false },
+      recall: { snapshotFirst: true },
+    });
+    expect(surface.registeredHooks).toEqual(
+      expect.arrayContaining(["agent_end", "before_prompt_build", "cron_changed", "session_start"]),
+    );
+
+    const searchTool = surface.registeredTools.find((tool) => tool.name === "native_memory_search");
+    const fetchTool = surface.registeredTools.find((tool) => tool.name === "native_memory_fetch");
+    const answerTool = surface.registeredTools.find((tool) => tool.name === "native_memory_answer");
+    expect(searchTool).toBeTruthy();
+    expect(fetchTool).toBeTruthy();
+    expect(answerTool).toBeTruthy();
+
+    const searchResult = await searchTool?.execute("call-search", { query: "harness neutral" });
+    expect(searchResult).toMatchObject({
+      details: [expect.objectContaining({ sourceId: "MEMORY.md" })],
+    });
+    const fetchResult = await fetchTool?.execute("call-fetch", { sourceId: "MEMORY.md" });
+    expect(fetchResult).toMatchObject({
+      details: expect.objectContaining({ content: expect.stringContaining("harness neutral recall fact") }),
+    });
+    const answerResult = await answerTool?.execute("call-answer", { query: "harness neutral" });
+    expect(answerResult).toMatchObject({
+      details: expect.objectContaining({ known: true }),
+    });
+  });
+
   it("enables host dreaming through the memory-core plugin config path", () => {
     const draft: Record<string, unknown> = {
       plugins: {
