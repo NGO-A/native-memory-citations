@@ -27,8 +27,8 @@ determines what may be read, and redaction applied to what is returned.
 - Redaction is **not** an authorization or access-control boundary. It lowers the
   chance of returning a secret that happens to sit inside an authorized file; it
   does not decide what may be read.
-- Redaction does not modify source files and does not affect citation hashes, which
-  are computed from the original file text.
+- Redaction does not modify source memory files and does not affect citation hashes,
+  which are computed from the original file text.
 
 ### Citation integrity
 
@@ -58,9 +58,12 @@ and individually gated, and the access boundary, redaction, and full-file SHA-25
 citation path are the same audited code in both modes.
 
 - **Local writes.** The knowledge-graph and observation features write derived files
-  (`memory/graph.jsonl`, `memory/observations.jsonl`) inside the workspace. They are
-  derived from already-authorized memory files and never overwrite host memory files
-  (`MEMORY.md`, daily notes, `DREAMS.md`). Graph extraction uses no model.
+  (`memory/graph.jsonl`, `memory/observations.jsonl`, and a cached session snapshot)
+  inside the workspace. They are derived from already-authorized memory files, are
+  size-bounded, and never overwrite your source memory files (`MEMORY.md`, daily notes,
+  `DREAMS.md`). These derived files are excluded from retrieval and citation, so
+  machine-generated content never feeds back into what the plugin returns or cites.
+  Graph extraction uses no model.
 - **Optional model call.** Observation tagging can summarize a turn with a model. This
   is off by default even in enhanced mode; when enabled, turn content is sent to the
   configured model (a privacy consideration), and the work runs asynchronously and

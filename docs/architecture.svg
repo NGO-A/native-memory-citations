@@ -108,6 +108,6 @@
   <text class="outk" x="460" y="724" text-anchor="middle">+ redacted snippet / content / answer</text>
 
   <!-- caption -->
-  <text class="cap" x="460" y="766" text-anchor="middle">Source files are never modified. The access boundary is what keeps a file unreadable; redaction is a second net, not the boundary.</text>
+  <text class="cap" x="460" y="766" text-anchor="middle">Source memory files are never modified. The access boundary is what keeps a file unreadable; redaction is a second net, not the boundary.</text>
   <text class="cap" x="460" y="784" text-anchor="middle">Pass a prior hash as expectedSha256 to fetch and a changed file is flagged stale: true while still returning current content.</text>
 </svg>

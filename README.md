@@ -1,5 +1,9 @@
 # Native Memory Citations
 
+[![CI](https://github.com/NGO-A/native-memory-citations/actions/workflows/ci.yml/badge.svg)](https://github.com/NGO-A/native-memory-citations/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@ngo-a/native-memory-citations)](https://www.npmjs.com/package/@ngo-a/native-memory-citations)
+[![license](https://img.shields.io/github/license/NGO-A/native-memory-citations)](LICENSE)
+
 Native Memory Citations is an OpenClaw plugin for controlled, cited retrieval from
 local workspace memory files. ("Native" denotes an OpenClaw-native plugin, not
 native system memory.)
@@ -21,11 +25,13 @@ The plugin runs in one of two modes, selected by the `mode` configuration key.
  retrieval, keyword/substring search, extractive cited answers, no network calls, no
  model calls, and no changes to host configuration. This is what a default install
  does, and what every guarantee in this document refers to.
-- **`enhanced` (opt-in).** Layers the three pillars of agentic memory - a local
- knowledge graph, semantic and reranked recall, session-snapshot injection, and
- observation tagging - on top of the bounded core, reusing the same access boundary,
- redaction, and citation guarantees. Every enhanced capability is disabled by default
- even in enhanced mode and is turned on explicitly, per feature.
+- **`enhanced` (opt-in, experimental).** Bounded mode is the stable production core;
+ enhanced mode layers additional agentic-memory capabilities on top of it, reusing the
+ same access boundary, redaction, and citation guarantees. This release adds a
+ functional zero-LLM knowledge-graph sidecar plus experimental lifecycle scaffolding
+ (snapshot injection, observation tagging, dreaming integration); richer semantic and
+ reranked recall and a memory-wiki bridge are forthcoming. Every enhanced capability is
+ disabled by default even in enhanced mode and is turned on explicitly, per feature.
 
 Leaving configuration at its defaults keeps the plugin in bounded mode; an upgrade
 changes nothing until you opt in. Enhanced-mode capabilities are introduced
@@ -40,7 +46,12 @@ incrementally beginning with the 2026.6.9 release - see
 - Redaction of secret-shaped content in all returned text (search, fetch, and answers).
 - Citations on every result, with full-file SHA-256 hashes for staleness detection.
 - Per-request output limits on fetched content.
-- Read-only operation: the plugin never creates, modifies, or deletes memory files.
+- Read-only by default: bounded mode never creates, modifies, or deletes any file, and
+ in every mode the plugin never modifies your source memory files (`MEMORY.md`, daily
+ notes, `DREAMS.md`). Enhanced mode, when explicitly enabled, writes only its own
+ size-bounded derived sidecars (e.g. `memory/graph.jsonl`, `memory/observations.jsonl`),
+ which are excluded from retrieval and citation - so generated content never feeds back
+ into what the plugin returns.
 
 ## Install
 
@@ -102,7 +113,9 @@ as `memory/.dreams` are rejected.
 
 Plugin configuration is supplied in the plugin's entry within the OpenClaw Gateway
 configuration. It governs which files the plugin is permitted to read and cite. The
-plugin reads existing memory files only; it does not create, modify, or delete them.
+bounded-mode plugin reads existing memory files only; it does not create, modify, or
+delete them. Enhanced mode can write only its own derived sidecars when explicitly
+enabled.
 All keys are optional.
 
 | Key | Type | Default | Description |
@@ -318,8 +331,8 @@ hidden path segments, non-text files, and files larger than `maxFileBytes`.
 Redaction is applied to all returned text as defense-in-depth. Named secret patterns
 provide readable labels for common formats; a high-entropy backstop masks unknown
 long tokens. Redaction is not an authorization or access-control boundary. It does
-not modify source files, and it does not affect citation hashes, which are computed
-from the original file text.
+not modify source memory files, and it does not affect citation hashes, which are
+computed from the original file text.
 
 To report a vulnerability, see [SECURITY.md](https://github.com/NGO-A/native-memory-citations/blob/master/SECURITY.md).
 
