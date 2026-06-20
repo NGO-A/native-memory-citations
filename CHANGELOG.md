@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.10
+
+- Security: redacts enhanced-mode observation writes, session snapshot writes, and
+  snapshot prompt injection with the same defense-in-depth redaction path used by
+  cited tool outputs.
+- Security: replaces silent enhanced-mode host dreaming mutation with explicit
+  consent. The default no longer mutates host config; it requests plugin approval
+  when available, degrades safely on deny/timeout/no approval route, and treats
+  `dreaming.autoEnable: true` as an explicit pre-authorization escape hatch.
+- Docs: adds enhanced-mode privacy and control disclosures to README and SECURITY.
+- Preserved bounded mode behavior: no writes, no hooks, no injection, no approval
+  requests, and no host dreaming mutation in bounded/default mode.
+
 ## 2026.6.9
 
 - Preserved bounded mode as the default behavior: read-only, keyword/substring search,

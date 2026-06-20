@@ -89,6 +89,19 @@ async function waitForFileSizeAtMost(file: string, maxBytes: number): Promise<nu
   return lastSize;
 }
 
+async function waitForFileContent(file: string): Promise<string> {
+  const deadline = Date.now() + 2000;
+  let last = "";
+  while (Date.now() < deadline) {
+    last = await readFile(file, "utf8").catch(() => "");
+    if (last.trim()) {
+      return last;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return last;
+}
+
 describe("plugin manifest contract", () => {
   it("declares the expected id and tool names", async () => {
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
@@ -240,6 +253,175 @@ describe("plugin manifest contract", () => {
       },
     });
     expect(draft).not.toHaveProperty("memory");
+  });
+
+  it("does not mutate host dreaming by default when approval is unavailable", async () => {
+    const workspace = await fixtureWorkspace();
+    const warnings: string[] = [];
+    let mutated = false;
+
+    await enhancedLifecycleForTest.runDreamingGuard({
+      pluginConfig: { workspace, mode: "enhanced" },
+      config: { plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } },
+      logger: { warn(message: string) { warnings.push(message); } },
+      runtime: {
+        approvals: {
+          callGatewayTool: async () => {
+            throw new Error("unknown method plugin.approval.request");
+          },
+        },
+        config: {
+          current: () => ({ plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } }),
+          mutateConfigFile: async () => {
+            mutated = true;
+            return {};
+          },
+        },
+      },
+    } as never, { workspace, mode: "enhanced" });
+
+    expect(mutated).toBe(false);
+    expect(warnings.join("\n")).toContain("dreaming is off");
+  });
+
+  it("does not mutate host dreaming after an approval denial", async () => {
+    const workspace = await fixtureWorkspace();
+    let mutated = false;
+    const calls: string[] = [];
+
+    await enhancedLifecycleForTest.runDreamingGuard({
+      pluginConfig: { workspace, mode: "enhanced" },
+      logger: { warn() {} },
+      runtime: {
+        approvals: {
+          callGatewayTool: async (method: string) => {
+            calls.push(method);
+            if (method === "plugin.approval.request") {
+              return { id: "plugin:deny" };
+            }
+            return { id: "plugin:deny", decision: "deny" };
+          },
+        },
+        config: {
+          current: () => ({ plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } }),
+          mutateConfigFile: async () => {
+            mutated = true;
+            return {};
+          },
+        },
+      },
+    } as never, { workspace, mode: "enhanced" });
+
+    expect(calls).toEqual(["plugin.approval.request", "plugin.approval.waitDecision"]);
+    expect(mutated).toBe(false);
+  });
+
+  it("honors explicit dreaming.autoEnable pre-authorization without requesting approval", async () => {
+    const workspace = await fixtureWorkspace();
+    const draft: Record<string, unknown> = {
+      plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } },
+    };
+    let approvalCalls = 0;
+    let mutated = false;
+
+    await enhancedLifecycleForTest.runDreamingGuard({
+      pluginConfig: { workspace, mode: "enhanced", dreaming: { autoEnable: true } },
+      logger: { warn() {} },
+      runtime: {
+        approvals: {
+          callGatewayTool: async () => {
+            approvalCalls += 1;
+            return {};
+          },
+        },
+        config: {
+          current: () => ({ plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } }),
+          mutateConfigFile: async ({ mutate }: { mutate: (draft: Record<string, unknown>) => void }) => {
+            mutated = true;
+            mutate(draft);
+            return {};
+          },
+        },
+      },
+    } as never, { workspace, mode: "enhanced", dreaming: { autoEnable: true } });
+
+    expect(approvalCalls).toBe(0);
+    expect(mutated).toBe(true);
+    expect(draft).toMatchObject({
+      plugins: { entries: { "memory-core": { config: { dreaming: { enabled: true } } } } },
+    });
+  });
+
+  it("persists allow-always dreaming approval and reuses it", async () => {
+    const workspace = await fixtureWorkspace();
+    let approvalCalls = 0;
+    let mutations = 0;
+
+    const buildApi = (decision: "allow-always" | "deny") => ({
+      pluginConfig: { workspace, mode: "enhanced" },
+      logger: { warn() {} },
+      runtime: {
+        approvals: {
+          callGatewayTool: async (method: string) => {
+            approvalCalls += 1;
+            if (method === "plugin.approval.request") {
+              return { id: "plugin:allow" };
+            }
+            return { id: "plugin:allow", decision };
+          },
+        },
+        config: {
+          current: () => ({ plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } }),
+          mutateConfigFile: async () => {
+            mutations += 1;
+            return {};
+          },
+        },
+      },
+    });
+
+    await enhancedLifecycleForTest.runDreamingGuard(buildApi("allow-always") as never, { workspace, mode: "enhanced" });
+    expect(await enhancedLifecycleForTest.readPersistentDreamingConsent({ workspace })).toBe(true);
+
+    await enhancedLifecycleForTest.runDreamingGuard(buildApi("deny") as never, { workspace, mode: "enhanced" });
+    expect(approvalCalls).toBe(2);
+    expect(mutations).toBe(2);
+  });
+
+  it("redacts secrets before writing observations", async () => {
+    const workspace = await fixtureWorkspace();
+    const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+    const handlers = registeredHookHandlers(workspace, {
+      mode: "enhanced",
+      observations: { enabled: true, extraction: false },
+    });
+    handlers.get("agent_end")?.({ runId: "turn-secret", content: `operator pasted ${secret}` }, {});
+
+    const observations = await waitForFileContent(path.join(workspace, "memory", "observations.jsonl"));
+    expect(observations).toContain("[REDACTED_OPENAI_KEY]");
+    expect(observations).not.toContain(secret);
+  });
+
+  it("redacts secrets before writing and injecting enhanced snapshots", async () => {
+    const workspace = await fixtureWorkspace();
+    const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+    await writeFile(path.join(workspace, "MEMORY.md"), `deployment token ${secret}\n`);
+
+    const handlers = registeredHookHandlers(workspace, {
+      mode: "enhanced",
+      injection: { enabled: true },
+      recall: { snapshotFirst: true },
+    });
+    await handlers.get("session_start")?.({}, {});
+
+    const snapshotPath = path.join(workspace, "memory", ".native-memory-citations", "snapshot.json");
+    const snapshot = await readFile(snapshotPath, "utf8");
+    expect(snapshot).toContain("[REDACTED_OPENAI_KEY]");
+    expect(snapshot).not.toContain(secret);
+
+    const injected = await handlers.get("before_prompt_build")?.({}, {}) as { prependContext?: string } | undefined;
+    expect(injected?.prependContext).toContain("[REDACTED_OPENAI_KEY]");
+    expect(injected?.prependContext).not.toContain(secret);
   });
 
   it("bounds enhanced observation append storage", async () => {

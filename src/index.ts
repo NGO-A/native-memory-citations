@@ -72,7 +72,7 @@ const configSchema = objectSchema({
     "Operating mode. bounded is default and preserves 2026.6.x behavior; enhanced enables explicitly configured pillars.",
   ),
   dreaming: objectSchema({
-    autoEnable: booleanSchema("In enhanced mode, allow the dreaming guard to enable OpenClaw dreaming."),
+    autoEnable: booleanSchema("In enhanced mode, pre-authorize the dreaming guard to enable OpenClaw dreaming without prompting. Default false."),
     enforce: booleanSchema("In enhanced mode, warn when dreaming-dependent features run without host dreaming."),
     blockToolsWhenOff: booleanSchema("In enhanced mode, make dreaming-dependent tools fail hard when dreaming is off."),
   }),

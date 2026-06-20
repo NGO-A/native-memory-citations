@@ -45,7 +45,7 @@
         "properties": {
           "autoEnable": {
             "type": "boolean",
-            "description": "In enhanced mode, allow the dreaming guard to enable OpenClaw dreaming."
+            "description": "In enhanced mode, pre-authorize the dreaming guard to enable OpenClaw dreaming without prompting. Default false."
           },
           "enforce": {
             "type": "boolean",
@@ -175,7 +175,7 @@
     },
     "additionalProperties": false
   },
-  "version": "2026.6.9",
+  "version": "2026.6.10",
   "contracts": {
     "tools": [
       "native_memory_search",

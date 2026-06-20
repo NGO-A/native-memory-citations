@@ -229,6 +229,17 @@ redaction, and citation guarantees. It is opt-in and default-off: setting
 `mode: "enhanced"` turns on the framework, and each pillar is then enabled
 individually. Doing nothing leaves the plugin in bounded mode.
 
+> **Enhanced-mode privacy & control.** Enhanced mode is opt-in and default-off. When
+> you enable its individual features, it can write conversation-derived local sidecars
+> (`memory/graph.jsonl`, `memory/observations.jsonl`, and a session snapshot), inject
+> redacted memory snapshot content into the model prompt, and depend on OpenClaw
+> `memory-core` dreaming. Sidecar writes and injection are redacted, retained locally,
+> and size-bounded, but redaction remains defense-in-depth rather than access control.
+> Disable these surfaces with `graph.enabled: false`, `observations.enabled: false`,
+> `injection.enabled: false`, and `recall.snapshotFirst: false`. The plugin asks for
+> permission before enabling host dreaming and never changes host config silently;
+> `dreaming.autoEnable: true` is the explicit non-interactive pre-authorization knob.
+
 > **Availability (2026.6.9).** Enhanced mode is delivered incrementally. This release
 > ships the bounded-mode guardrails, the enhanced config schema, plugin health checks,
 > the deterministic zero-LLM knowledge-graph sidecar, and the enhanced lifecycle
@@ -273,11 +284,12 @@ individually. Doing nothing leaves the plugin in bounded mode.
 
 Enhanced mode builds on OpenClaw's built-in dream cycle (Light -> REM -> Deep
 consolidation), which is **off by default in OpenClaw**. When you enable enhanced
-mode, the plugin enables dreaming for you and prints a notice explaining that it
-*continues* - and does not replace - OpenClaw's dreaming, and that disabling dreaming
-while enhanced mode is on will degrade or silently break these features. Bounded mode
-never touches the dreaming setting. (In `2026.6.9` the guard's code path ships; its
-host-config mutation on real startup is part of the dispatch validation still pending.)
+mode and dreaming is off, the plugin asks for plugin approval before enabling
+`memory-core` dreaming. Denial, timeout, a headless/no-approval route, or an
+unavailable approval API leaves host config unchanged and logs that dreaming-dependent
+enhanced features are degraded. Bounded mode never touches the dreaming setting.
+Set `dreaming.autoEnable: true` only when a non-interactive deployment has already
+pre-authorized this host configuration change.
 
 ### Configuration (enhanced keys)
 
@@ -306,7 +318,7 @@ tagging falls back to the no-model append path.
 | `observations.model` | string | host default | Optional model profile for future extraction; when omitted, use the host's configured summarization/fast model. |
 | `observations.extraction` | boolean | `true` | When `false`, record raw entries with no model call. |
 | `observations.maxBytes` | number | `1048576` | Maximum retained size for `memory/observations.jsonl` in enhanced mode. |
-| `dreaming.autoEnable` | boolean | `true` | In enhanced mode, enable host dreaming if it is off. |
+| `dreaming.autoEnable` | boolean | `false` | Pre-authorize enabling host dreaming without a prompt. |
 | `dreaming.enforce` | boolean | `true` | Re-warn at startup if dreaming is disabled in enhanced mode. |
 | `dreaming.blockToolsWhenOff` | boolean | `false` | If `true`, dreaming-dependent tools error instead of degrading when dreaming is off. |
 | `wikiBridge.enabled` | boolean | `false` | Enrich a separately installed `memory-wiki` vault, if present. |

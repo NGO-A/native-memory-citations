@@ -21,6 +21,8 @@ determines what may be read, and redaction applied to what is returned.
 
 - All returned text — search snippets, fetched content, and extractive answers — is
   redacted before it leaves the plugin.
+- In enhanced mode, observation sidecar writes, session snapshot writes, and snapshot
+  prompt injection are redacted before they leave their source path.
 - Named secret patterns provide readable labels for common formats (for example API
   keys, bearer tokens and JWTs, credential URLs, and private key blocks). A
   high-entropy backstop masks unknown long tokens.
@@ -57,6 +59,12 @@ Enhanced mode adds capabilities that introduce new surfaces. Each is off by defa
 and individually gated, and the access boundary, redaction, and full-file SHA-256
 citation path are the same audited code in both modes.
 
+- **Privacy and control.** Enhanced mode can write conversation-derived data to local
+  sidecars (`memory/graph.jsonl`, `memory/observations.jsonl`, and a cached session
+  snapshot) and can inject redacted memory snapshot content into the model prompt.
+  These surfaces are opt-in, size-bounded, redacted, and locally retained. Disable
+  them with `graph.enabled: false`, `observations.enabled: false`,
+  `injection.enabled: false`, and `recall.snapshotFirst: false`.
 - **Local writes.** The knowledge-graph and observation features write derived files
   (`memory/graph.jsonl`, `memory/observations.jsonl`, and a cached session snapshot)
   inside the workspace. They are derived from already-authorized memory files, are
@@ -72,8 +80,11 @@ citation path are the same audited code in both modes.
   through a prompt-build hook. It requires the host to explicitly allow prompt
   injection for this plugin and does not run under the `claude-cli` provider.
 - **Host configuration.** Enhanced mode depends on OpenClaw's dream cycle and will
-  enable it, with an explicit notice. This is a host-configuration change; bounded
-  mode never makes it.
+  ask for plugin approval before enabling it. Denial, timeout, unavailable approvals,
+  or headless/no-approval routes leave host configuration unchanged and degrade
+  dreaming-dependent enhanced features. `dreaming.autoEnable: true` is an explicit
+  pre-authorization escape hatch for non-interactive deployments. Bounded mode never
+  requests approval or changes dreaming.
 
 Enhanced retrieval answers remain subject to the same access boundary, redaction, and
 citation guarantees as bounded answers.

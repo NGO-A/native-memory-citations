@@ -362,6 +362,10 @@ function redactSingleLineSecrets(line: string): string {
     ));
 }
 
+export function redactMemoryText(text: string): string {
+  return buildRedactedLines(text.split(/\r?\n/)).join("\n");
+}
+
 function buildRedactedLines(rawLines: string[]): string[] {
   const mask = new Array<boolean>(rawLines.length).fill(false);
 
