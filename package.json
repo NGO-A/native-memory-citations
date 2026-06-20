@@ -56,9 +56,6 @@
     "test": "vitest run --dir src --no-file-parallelism",
     "test:stress": "vitest run src/bounded-invariants.test.ts src/stress-soak.test.ts --no-file-parallelism"
   },
-  "dependencies": {
-    "typebox": "1.1.39"
-  },
   "devDependencies": {
     "@types/node": "^22.19.0",
     "openclaw": "2026.6.8",

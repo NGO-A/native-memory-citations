@@ -22,11 +22,18 @@
   "gatewayStartup": {
     "readyzP50RegressionPctBudget": 5,
     "maxRssP50RegressionPctBudget": 10,
+    "primaryGate": "readyzP50RegressionPctBudget",
+    "runtimePostBindSpanMs": {
+      "boundedP50ObservedMs": 427.5,
+      "enhancedP50ObservedMs": 451.3,
+      "enhancedP50BudgetMs": 700,
+      "disposition": "secondary-watch"
+    },
     "runtimePostBindTotalMs": {
       "boundedP50ObservedMs": 489.3,
       "enhancedP50ObservedMs": 1026,
-      "enhancedP50BudgetMs": 1100,
-      "disposition": "accepted-mode-aware-budget"
+      "metricSemantics": "timeline-position-at-span-end-not-bind-duration",
+      "disposition": "demoted-to-diagnostic"
     }
   }
 }
