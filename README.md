@@ -285,11 +285,12 @@ individually. Doing nothing leaves the plugin in bounded mode.
 Enhanced mode builds on OpenClaw's built-in dream cycle (Light -> REM -> Deep
 consolidation), which is **off by default in OpenClaw**. When you enable enhanced
 mode and dreaming is off, the plugin asks for plugin approval before enabling
-`memory-core` dreaming. Denial, timeout, a headless/no-approval route, or an
-unavailable approval API leaves host config unchanged and logs that dreaming-dependent
-enhanced features are degraded. Bounded mode never touches the dreaming setting.
-Set `dreaming.autoEnable: true` only when a non-interactive deployment has already
-pre-authorized this host configuration change.
+`memory-core` dreaming. The consent prompt requires an approval-capable host and
+channel. Denial, timeout, a bare/headless host with no approval route, or an
+unavailable approval API leaves host config unchanged and logs that
+dreaming-dependent enhanced features are degraded. Bounded mode never touches the
+dreaming setting. Set `dreaming.autoEnable: true` only when a non-interactive
+deployment has already pre-authorized this host configuration change.
 
 ### Configuration (enhanced keys)
 

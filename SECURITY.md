@@ -80,11 +80,12 @@ citation path are the same audited code in both modes.
   through a prompt-build hook. It requires the host to explicitly allow prompt
   injection for this plugin and does not run under the `claude-cli` provider.
 - **Host configuration.** Enhanced mode depends on OpenClaw's dream cycle and will
-  ask for plugin approval before enabling it. Denial, timeout, unavailable approvals,
-  or headless/no-approval routes leave host configuration unchanged and degrade
-  dreaming-dependent enhanced features. `dreaming.autoEnable: true` is an explicit
-  pre-authorization escape hatch for non-interactive deployments. Bounded mode never
-  requests approval or changes dreaming.
+  ask for plugin approval before enabling it. The consent prompt requires an
+  approval-capable host and channel. Denial, timeout, unavailable approvals, or a
+  bare/headless host with no approval route leave host configuration unchanged and
+  degrade dreaming-dependent enhanced features. `dreaming.autoEnable: true` is an
+  explicit pre-authorization escape hatch for non-interactive deployments. Bounded
+  mode never requests approval or changes dreaming.
 
 Enhanced retrieval answers remain subject to the same access boundary, redaction, and
 citation guarantees as bounded answers.
