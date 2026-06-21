@@ -25,7 +25,35 @@ on:
 permissions: {}
 
 jobs:
+  pack-npm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Download npm pack tarball
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          mkdir -p .local/clawhub
+          npm pack "@ngo-a/native-memory-citations@${version}" --pack-destination .local/clawhub
+
+      - name: Upload npm pack tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: clawhub-npm-pack
+          path: .local/clawhub/*.tgz
+          if-no-files-found: error
+
   publish-clawhub:
+    needs: pack-npm
     uses: openclaw/clawhub/.github/workflows/package-publish.yml@6f28659e7bfb5ae21e1bcc2d6896fea9c0a7f698
     permissions:
       actions: read
@@ -37,3 +65,4 @@ jobs:
       dry_run: ${{ inputs.dry_run == 'true' }}
       tags: ${{ inputs.publish_tag }}
       source_path: "."
+      package_artifact_name: clawhub-npm-pack
