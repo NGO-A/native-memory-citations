@@ -26,12 +26,11 @@ permissions: {}
 
 jobs:
   publish-clawhub:
+    uses: openclaw/clawhub/.github/workflows/package-publish.yml@6f28659e7bfb5ae21e1bcc2d6896fea9c0a7f698
     permissions:
       actions: read
       contents: read
       id-token: write
-    environment: clawhub-plugin-release
-    uses: openclaw/clawhub/.github/workflows/package-publish.yml@6f28659e7bfb5ae21e1bcc2d6896fea9c0a7f698
     with:
       source: NGO-A/native-memory-citations
       ref: ${{ inputs.source_ref || github.ref }}
