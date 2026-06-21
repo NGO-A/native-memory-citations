@@ -167,7 +167,7 @@
     },
     "additionalProperties": false
   },
-  "version": "2026.6.12",
+  "version": "2026.6.13",
   "contracts": {
     "tools": [
       "native_memory_search",
