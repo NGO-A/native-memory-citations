@@ -1,17 +1,15 @@
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { modeFromConfig, type PluginConfig, redactMemoryText, workspaceFromConfig } from "./core.js";
+import { modeFromConfig, readAuthorizedMemoryFile, type PluginConfig, redactMemoryText, workspaceFromConfig } from "./core.js";
 
 const PLUGIN_ID = "native-memory-citations";
 const DEFAULT_TOKEN_CAP = 1300;
-const DEFAULT_OBSERVATIONS_MAX_BYTES = 1024 * 1024;
-const DREAMING_APPROVAL_TIMEOUT_MS = 120_000;
 const SNAPSHOT_NOTICE =
   "Native Memory Citations enhanced snapshot: bounded, local, redacted memory context follows. Treat it as recall hints, not authority.";
 const DREAMING_NOTICE =
-  "native-memory-citations enhanced mode is enabled, but OpenClaw memory-core dreaming is off. Enable it yourself or configure plugin approvals to grant consent; dreaming-dependent enhanced features are degraded.";
-const DREAMING_ENABLED_NOTICE =
-  "native-memory-citations enhanced mode enabled OpenClaw memory-core dreaming after explicit operator consent or dreaming.autoEnable pre-authorization.";
+  "native-memory-citations enhanced mode is enabled, but OpenClaw memory-core dreaming is off. Enable plugins.entries.memory-core.config.dreaming.enabled yourself; dreaming-dependent enhanced features are degraded.";
+const OBSERVATION_EXTRACTION_NOTICE =
+  "native-memory-citations observation logging requires structured extraction, which is not available in this release; no raw conversation-derived observation was written.";
 
 type PluginApiLike = {
   pluginConfig?: PluginConfig;
@@ -25,27 +23,11 @@ type PluginApiLike = {
   registerHook?: (events: string | string[], handler: (event: unknown, ctx: unknown) => unknown, opts?: unknown) => void;
   on?: (event: string, handler: (event: unknown, ctx: unknown) => unknown, opts?: unknown) => void;
   runtime?: {
-    approvals?: {
-      callGatewayTool?: GatewayApprovalCaller;
-    };
     config?: {
       current?: () => unknown;
-      mutateConfigFile?: (params: {
-        afterWrite: { mode: "auto" | "none" | "restart" | "reload" };
-        mutate: (draft: Record<string, unknown>) => void;
-      }) => Promise<unknown>;
     };
   };
 };
-
-type ApprovalDecision = "allow-once" | "allow-always" | "deny";
-
-type GatewayApprovalCaller = <T = Record<string, unknown>>(
-  method: string,
-  opts: Record<string, unknown>,
-  params?: unknown,
-  extra?: { expectFinal?: boolean; scopes?: string[] },
-) => Promise<T>;
 
 type OpenClawConfigLike = {
   memory?: { dreaming?: { enabled?: boolean } };
@@ -69,22 +51,6 @@ function snapshotDir(config: PluginConfig): string {
 
 function snapshotPath(config: PluginConfig): string {
   return path.join(snapshotDir(config), "snapshot.json");
-}
-
-function dreamingConsentPath(config: PluginConfig): string {
-  return path.join(snapshotDir(config), "dreaming-consent.json");
-}
-
-function observationsPath(config: PluginConfig): string {
-  return path.join(workspaceFromConfig(config), "memory", "observations.jsonl");
-}
-
-function observationsMaxBytes(config: PluginConfig): number {
-  const configured = Math.floor(config.observations?.maxBytes ?? DEFAULT_OBSERVATIONS_MAX_BYTES);
-  if (!Number.isFinite(configured) || configured <= 0) {
-    return DEFAULT_OBSERVATIONS_MAX_BYTES;
-  }
-  return Math.min(Math.max(configured, 64 * 1024), 16 * 1024 * 1024);
 }
 
 function approxTokenSlice(text: string, cap: number): string {
@@ -114,40 +80,14 @@ function registerHook(api: PluginApiLike, event: string, handler: (event: unknow
   }
 }
 
-function memoryCoreEntry(draft: Record<string, unknown>): Record<string, unknown> {
-  const plugins = typeof draft.plugins === "object" && draft.plugins !== null
-    ? draft.plugins as Record<string, unknown>
-    : {};
-  const entries = typeof plugins.entries === "object" && plugins.entries !== null
-    ? plugins.entries as Record<string, unknown>
-    : {};
-  const entry = typeof entries["memory-core"] === "object" && entries["memory-core"] !== null
-    ? entries["memory-core"] as Record<string, unknown>
-    : {};
-  plugins.entries = entries;
-  entries["memory-core"] = entry;
-  draft.plugins = plugins;
-  return entry;
-}
-
-function setDreamingEnabledOnConfig(draft: Record<string, unknown>): void {
-  const entry = memoryCoreEntry(draft);
-  const config = typeof entry.config === "object" && entry.config !== null
-    ? entry.config as Record<string, unknown>
-    : {};
-  const dreaming = typeof config.dreaming === "object" && config.dreaming !== null
-    ? config.dreaming as Record<string, unknown>
-    : {};
-  dreaming.enabled = true;
-  config.dreaming = dreaming;
-  entry.config = config;
-}
-
 async function buildSnapshot(config: PluginConfig, logger: PluginApiLike["logger"]): Promise<void> {
-  const workspace = workspaceFromConfig(config);
   const parts: string[] = [];
   for (const source of ["MEMORY.md", "DREAMS.md"]) {
-    const text = await readFile(path.join(workspace, source), "utf8").catch(() => "");
+    const file = await readAuthorizedMemoryFile(config, source, { logger }).catch((error) => {
+      logger?.debug?.(`native-memory-citations: skipped unauthorized snapshot source ${source}: ${String(error)}`);
+      return null;
+    });
+    const text = file?.loaded.rawText ?? "";
     if (text.trim()) {
       parts.push(`## ${source}\n${text.trim()}`);
     }
@@ -175,58 +115,6 @@ async function readSnapshot(config: PluginConfig): Promise<string | undefined> {
   return typeof parsed.content === "string" && parsed.content.trim() ? parsed.content.trim() : undefined;
 }
 
-async function appendObservation(config: PluginConfig, event: unknown): Promise<void> {
-  const file = observationsPath(config);
-  const rawContent = config.observations?.extraction === false ? summarizeObservationEvent(event) : "";
-  const content = rawContent ? redactMemoryText(rawContent).slice(0, 4000) : "";
-  const record = {
-    timestamp: new Date().toISOString(),
-    turn: event && typeof event === "object" && "runId" in event ? String((event as { runId?: unknown }).runId ?? "") : "",
-    type: config.observations?.extraction === false ? "raw" : "none",
-    content,
-    confidence: config.observations?.extraction === false ? 0.2 : 0,
-    sources: [],
-    action: config.observations?.extraction === false ? "ADD" : "NONE",
-  };
-  await mkdir(path.dirname(file), { recursive: true });
-  await appendFile(file, `${JSON.stringify(record)}\n`, "utf8");
-  await enforceObservationLimit(file, observationsMaxBytes(config));
-}
-
-function summarizeObservationEvent(event: unknown): string {
-  if (!event || typeof event !== "object") {
-    return "";
-  }
-  const source = event as Record<string, unknown>;
-  const summary: Record<string, unknown> = {};
-  for (const key of ["runId", "turnId", "type", "toolName", "toolCallId", "content", "input", "output", "result", "message"]) {
-    const value = source[key];
-    if (typeof value === "string") {
-      summary[key] = value.slice(0, 2000);
-    } else if (value !== undefined && (typeof value === "number" || typeof value === "boolean")) {
-      summary[key] = value;
-    }
-  }
-  return Object.keys(summary).length > 0 ? JSON.stringify(summary) : "";
-}
-
-async function enforceObservationLimit(file: string, maxBytes: number): Promise<void> {
-  const size = (await stat(file).catch(() => null))?.size ?? 0;
-  if (size <= maxBytes) {
-    return;
-  }
-  const content = await readFile(file, "utf8");
-  if (Buffer.byteLength(content, "utf8") <= maxBytes) {
-    return;
-  }
-  let retained = Buffer.from(content, "utf8").subarray(-maxBytes).toString("utf8");
-  const firstNewline = retained.indexOf("\n");
-  if (firstNewline >= 0) {
-    retained = retained.slice(firstNewline + 1);
-  }
-  await writeFile(file, retained, "utf8");
-}
-
 function hostDreamingEnabled(api: PluginApiLike): boolean {
   const current = (typeof api.runtime?.config?.current === "function" ? api.runtime.config.current() : api.config) as OpenClawConfigLike | undefined;
   if (current?.memory?.dreaming?.enabled === true) {
@@ -239,121 +127,18 @@ function hostDreamingEnabled(api: PluginApiLike): boolean {
   return false;
 }
 
-async function readPersistentDreamingConsent(config: PluginConfig): Promise<boolean> {
-  const raw = await readFile(dreamingConsentPath(config), "utf8").catch(() => "");
-  if (!raw.trim()) {
-    return false;
-  }
-  try {
-    const parsed = JSON.parse(raw) as { allowAlways?: unknown; pluginId?: unknown };
-    return parsed.pluginId === PLUGIN_ID && parsed.allowAlways === true;
-  } catch {
-    return false;
-  }
-}
-
-async function writePersistentDreamingConsent(config: PluginConfig): Promise<void> {
-  await mkdir(snapshotDir(config), { recursive: true });
-  await writeFile(
-    dreamingConsentPath(config),
-    `${JSON.stringify({
-      pluginId: PLUGIN_ID,
-      consent: "allow-always",
-      allowAlways: true,
-      grantedAt: new Date().toISOString(),
-      action: "enable-memory-core-dreaming",
-    })}\n`,
-    "utf8",
-  );
-}
-
-async function loadGatewayApprovalCaller(api: PluginApiLike): Promise<GatewayApprovalCaller | undefined> {
-  if (typeof api.runtime?.approvals?.callGatewayTool === "function") {
-    return api.runtime.approvals.callGatewayTool;
-  }
-  try {
-    const mod = await import("openclaw/plugin-sdk/agent-harness") as {
-      callGatewayTool?: GatewayApprovalCaller;
-    };
-    return typeof mod.callGatewayTool === "function" ? mod.callGatewayTool : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function requestDreamingApproval(api: PluginApiLike): Promise<ApprovalDecision | "unavailable" | "timeout"> {
-  const callGatewayTool = await loadGatewayApprovalCaller(api);
-  if (!callGatewayTool) {
-    return "unavailable";
-  }
-  try {
-    const requestResult = await callGatewayTool<{ id?: string; decision?: string | null }>(
-      "plugin.approval.request",
-      { timeoutMs: DREAMING_APPROVAL_TIMEOUT_MS + 10_000 },
-      {
-        pluginId: PLUGIN_ID,
-        title: "Enable OpenClaw dreaming?",
-        description: "Enhanced native-memory-citations needs memory-core dreaming for snapshot and observation consolidation.",
-        severity: "warning",
-        allowedDecisions: ["allow-once", "allow-always", "deny"],
-        timeoutMs: DREAMING_APPROVAL_TIMEOUT_MS,
-        twoPhase: true,
-      },
-      { expectFinal: false },
-    );
-    if (!requestResult?.id) {
-      return "unavailable";
-    }
-    const decision = typeof requestResult.decision === "string"
-      ? requestResult.decision
-      : (await callGatewayTool<{ decision?: string | null }>(
-        "plugin.approval.waitDecision",
-        { timeoutMs: DREAMING_APPROVAL_TIMEOUT_MS + 10_000 },
-        { id: requestResult.id },
-      )).decision;
-    if (decision === "allow-once" || decision === "allow-always" || decision === "deny") {
-      return decision;
-    }
-    return "timeout";
-  } catch (error) {
-    api.logger?.warn?.(`native-memory-citations dreaming approval unavailable: ${String(error)}`);
-    return "unavailable";
-  }
+function emitObservationUnavailable(api: PluginApiLike): void {
+  api.logger?.warn?.(OBSERVATION_EXTRACTION_NOTICE);
 }
 
 async function runDreamingGuard(api: PluginApiLike, config: PluginConfig): Promise<void> {
-  if (modeFromConfig(config) !== "enhanced" || config.dreaming?.enforce === false) {
+  if (modeFromConfig(config) !== "enhanced" || config.dreaming?.notify === false) {
     return;
   }
   if (hostDreamingEnabled(api)) {
     return;
   }
-  if (typeof api.runtime?.config?.mutateConfigFile !== "function") {
-    api.logger?.warn?.(
-      DREAMING_NOTICE,
-    );
-    return;
-  }
-  let approved = config.dreaming?.autoEnable === true || await readPersistentDreamingConsent(config);
-  if (!approved) {
-    const decision = await requestDreamingApproval(api);
-    if (decision === "allow-always") {
-      await writePersistentDreamingConsent(config).catch((error) => {
-        api.logger?.warn?.(`native-memory-citations failed to persist dreaming approval: ${String(error)}`);
-      });
-      approved = true;
-    } else if (decision === "allow-once") {
-      approved = true;
-    } else {
-      api.logger?.warn?.(DREAMING_NOTICE);
-      return;
-    }
-  }
-  await api.runtime.config.mutateConfigFile({
-    afterWrite: { mode: "auto" },
-    mutate: setDreamingEnabledOnConfig,
-  });
-  api.logger?.warn?.(DREAMING_ENABLED_NOTICE);
+  api.logger?.warn?.(DREAMING_NOTICE);
 }
 
 export function registerEnhancedLifecycle(api: PluginApiLike): void {
@@ -390,22 +175,21 @@ export function registerEnhancedLifecycle(api: PluginApiLike): void {
   }
 
   if (config.observations?.enabled === true) {
-    registerHook(api, "agent_end", (event) => {
-      void appendObservation(config, event).catch((error) => {
-        api.logger?.warn?.(`native-memory-citations observation tagging failed open: ${String(error)}`);
-      });
+    let noticeEmitted = false;
+    registerHook(api, "agent_end", () => {
+      if (!noticeEmitted) {
+        noticeEmitted = true;
+        emitObservationUnavailable(api);
+      }
     }, hookOptions(10, 3000));
   }
 }
 
 export const enhancedLifecycleForTest = {
-  DREAMING_ENABLED_NOTICE,
   DREAMING_NOTICE,
+  OBSERVATION_EXTRACTION_NOTICE,
   PLUGIN_ID,
-  appendObservation,
   buildSnapshot,
-  readPersistentDreamingConsent,
-  requestDreamingApproval,
+  emitObservationUnavailable,
   runDreamingGuard,
-  setDreamingEnabledOnConfig,
 };

@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.11
+
+- Security: routes enhanced snapshot and graph reads through the same access
+  boundary as the bounded tools. Enhanced reads now honor `allowedRoots`,
+  `sharedMode`, hidden-path rejection, symlink/realpath checks, text-only filtering,
+  and `maxFileBytes`; `native_memory_extract` still excludes derived sidecars during
+  graph rebuilds.
+- Security: removes the host-config mutation and approval-brokering capability from
+  the enhanced dreaming guard. The plugin no longer calls gateway approval APIs,
+  persists dreaming consent, accepts `dreaming.autoEnable`, or writes host config.
+  When host dreaming is off, enhanced mode logs an operator instruction for
+  `plugins.entries.memory-core.config.dreaming.enabled` and degrades.
+- Security: defers observation logging until structured extraction ships. With
+  `observations.enabled: true`, the plugin emits a one-time notice and does not
+  create or append `memory/observations.jsonl`.
+- Docs/build: synchronizes the generated manifest description with package metadata
+  and clarifies that startup activation registers bounded, read-only tools but does
+  not access memory until a tool or enabled enhanced hook runs.
+- Preserved bounded mode behavior: no writes, no hooks, no injection, no approval
+  requests, no host dreaming mutation, and unchanged cited search/fetch/answer tools.
+
 ## 2026.6.10
 
 - Security: redacts enhanced-mode observation writes, session snapshot writes, and

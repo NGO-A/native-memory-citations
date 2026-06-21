@@ -72,9 +72,7 @@ const configSchema = objectSchema({
     "Operating mode. bounded is default and preserves 2026.6.x behavior; enhanced enables explicitly configured pillars.",
   ),
   dreaming: objectSchema({
-    autoEnable: booleanSchema("In enhanced mode, pre-authorize the dreaming guard to enable OpenClaw dreaming without prompting. Default false."),
-    enforce: booleanSchema("In enhanced mode, warn when dreaming-dependent features run without host dreaming."),
-    blockToolsWhenOff: booleanSchema("In enhanced mode, make dreaming-dependent tools fail hard when dreaming is off."),
+    notify: booleanSchema("In enhanced mode, warn when host memory-core dreaming is off. Default true."),
   }),
   graph: objectSchema({
     enabled: booleanSchema("Enable the local zero-LLM graph sidecar tools. Default false."),
@@ -96,9 +94,9 @@ const configSchema = objectSchema({
     tokenCap: numberSchema("Maximum injected snapshot budget. Default 1300."),
   }),
   observations: objectSchema({
-    enabled: booleanSchema("Enhanced mode placeholder for observation tagging. Default false."),
+    enabled: booleanSchema("Enhanced mode placeholder for future structured observation tagging. Default false."),
     model: stringSchema("Optional host model profile for future observation extraction. When omitted, use the host configured summarization or fast model."),
-    extraction: booleanSchema("When false, observation tagging uses raw append fallback. Default true."),
+    extraction: booleanSchema("Reserved for the future structured-extraction release; raw observation persistence is disabled."),
     maxBytes: numberSchema("Maximum retained observations.jsonl size in bytes. Default 1048576."),
   }),
   wikiBridge: objectSchema({
@@ -111,7 +109,7 @@ const ENHANCED_TOOL_NAMES = new Set(["native_memory_graph", "native_memory_extra
 const plugin = defineToolPlugin({
   id: "native-memory-citations",
   name: "Native Memory Citations",
-  description: "Search and fetch local OpenClaw memory with source citations and extractive cited answers.",
+  description: "Cited, access-bounded local-memory retrieval for OpenClaw: access boundary, redaction, citations, and opt-in enhanced memory sidecars.",
   configSchema,
   tools: (tool) => [
     tool({

@@ -230,24 +230,27 @@ redaction, and citation guarantees. It is opt-in and default-off: setting
 individually. Doing nothing leaves the plugin in bounded mode.
 
 > **Enhanced-mode privacy & control.** Enhanced mode is opt-in and default-off. When
-> you enable its individual features, it can write conversation-derived local sidecars
-> (`memory/graph.jsonl`, `memory/observations.jsonl`, and a session snapshot), inject
-> redacted memory snapshot content into the model prompt, and depend on OpenClaw
-> `memory-core` dreaming. Sidecar writes and injection are redacted, retained locally,
-> and size-bounded, but redaction remains defense-in-depth rather than access control.
+> you enable its individual features, it can write local sidecars
+> (`memory/graph.jsonl` and a session snapshot), inject redacted memory snapshot
+> content into the model prompt, and depend on OpenClaw `memory-core` dreaming.
+> Sidecar writes and injection are redacted, retained locally, and size-bounded, but
+> redaction remains defense-in-depth rather than access control.
 > Disable these surfaces with `graph.enabled: false`, `observations.enabled: false`,
-> `injection.enabled: false`, and `recall.snapshotFirst: false`. The plugin asks for
-> permission before enabling host dreaming and never changes host config silently;
-> `dreaming.autoEnable: true` is the explicit non-interactive pre-authorization knob.
+> `injection.enabled: false`, and `recall.snapshotFirst: false`. The plugin never
+> changes host config and no longer brokers approvals; if host dreaming is off, it
+> tells the operator to set `plugins.entries.memory-core.config.dreaming.enabled`
+> themselves and degrades dreaming-dependent features.
 
-> **Availability (2026.6.9).** Enhanced mode is delivered incrementally. This release
+> **Availability (2026.6.11).** Enhanced mode is delivered incrementally. This release
 > ships the bounded-mode guardrails, the enhanced config schema, plugin health checks,
 > the deterministic zero-LLM knowledge-graph sidecar, and the enhanced lifecycle
-> scaffolding. The richer recall, model-based, and wiki pillars - and full runtime
-> dispatch/soak validation of the lifecycle hooks - are still pending (see Forthcoming).
+> scaffolding. Enhanced snapshot and graph reads reuse the same access boundary as
+> bounded tools. Observation logging is deferred until structured extraction ships.
+> The richer recall, model-based, and wiki pillars - and full runtime dispatch/soak
+> validation of the lifecycle hooks - are still pending (see Forthcoming).
 > On any version, an unset or default configuration behaves exactly as bounded mode.
 
-### What 2026.6.9 ships
+### What 2026.6.11 ships
 
 - **Bounded mode (default)** - unchanged guardrails and behavior (everything above).
 - **Enhanced config schema + plugin health checks** - all enhanced keys are
@@ -257,26 +260,29 @@ individually. Doing nothing leaves the plugin in bounded mode.
  entity links (for example `works_at`, `invested_in`, `founded`) from your authorized
  memory files into `memory/graph.jsonl` with no model call; `native_memory_graph`
  queries it with a hard depth cap and cycle prevention. This pillar is functional in
- this release.
+ this release. Extraction uses the same `allowedRoots`, `sharedMode`, hidden-path,
+ symlink/realpath, text-only, and `maxFileBytes` boundary as bounded search/fetch.
 - **Enhanced lifecycle scaffolding** (`injection.enabled`, `observations.enabled`,
  `recall.snapshotFirst`). The code paths are present: `session_start` writes a capped
- session snapshot, `before_prompt_build` injects it, and `agent_end` appends to
- `memory/observations.jsonl` within `observations.maxBytes`. They require their host hook gates
- (`hooks.allowPromptInjection` for injection, `hooks.allowConversationAccess` for the
- observation append). On external-CLI runners or any other harness where in-process
- lifecycle hooks do not dispatch, these hook-dependent features degrade cleanly: the
- turn is unaffected and the three core cited-memory tools still work. **Runtime hook
- dispatch and soak validation are still pending - treat these as experimental until
- validated on the embedded runner.**
+ session snapshot from authorized `MEMORY.md`/`DREAMS.md` only when those files pass
+ the access boundary, and `before_prompt_build` injects it. `agent_end` currently
+ emits a one-time notice and does not write raw observation records; observation
+ logging resumes only when structured extraction ships. On external-CLI runners or
+ any other harness where in-process lifecycle hooks do not dispatch, these
+ hook-dependent features degrade cleanly: the turn is unaffected and the three core
+ cited-memory tools still work. **Runtime hook dispatch and soak validation are still
+ pending - treat these as experimental until validated on the embedded runner.**
 
 ### Forthcoming (not in 2026.6.9)
 
 - Semantic recall fusion through the host `memory_search`, RRF reranking, intent
  classification, and snapshot-first recall inside `native_memory_search` /
  `native_memory_answer`.
-- Model-based observation extraction (the current path appends without a model) and its
- fail-open-under-slow-model validation. When it ships, the default will use the
- host's configured summarization/fast model, not a provider-specific model name.
+- Model-based structured observation extraction and its fail-open-under-slow-model
+ validation. Until that ships, `observations.enabled` emits a one-time notice and
+ writes no raw conversation-derived sidecar. When extraction ships, the default will
+ use the host's configured summarization/fast model, not a provider-specific model
+ name.
 - The `memory-wiki` bridge.
 - External gateway-perf, package-gauntlet, and long-soak validation lanes.
 
@@ -284,13 +290,11 @@ individually. Doing nothing leaves the plugin in bounded mode.
 
 Enhanced mode builds on OpenClaw's built-in dream cycle (Light -> REM -> Deep
 consolidation), which is **off by default in OpenClaw**. When you enable enhanced
-mode and dreaming is off, the plugin asks for plugin approval before enabling
-`memory-core` dreaming. The consent prompt requires an approval-capable host and
-channel. Denial, timeout, a bare/headless host with no approval route, or an
-unavailable approval API leaves host config unchanged and logs that
-dreaming-dependent enhanced features are degraded. Bounded mode never touches the
-dreaming setting. Set `dreaming.autoEnable: true` only when a non-interactive
-deployment has already pre-authorized this host configuration change.
+mode and dreaming is off, the plugin logs an operator instruction to set
+`plugins.entries.memory-core.config.dreaming.enabled` and degrades
+dreaming-dependent enhanced features. It does not request approval, persist consent,
+or mutate host configuration under any setting. Bounded mode never touches the
+dreaming setting.
 
 ### Configuration (enhanced keys)
 
@@ -300,8 +304,8 @@ pillars - `recall.semantic`, `recall.rerank`, `recall.intentClassifier`,
 `observations.model` and model-based `observations.extraction`, and `wikiBridge.enabled`
 - are accepted by the schema but have no effect until those pillars ship. Omit
 `observations.model` to use the host's configured summarization/fast model when
-model-based extraction is implemented; if no host model is available, observation
-tagging falls back to the no-model append path.
+model-based extraction is implemented. Until structured extraction is implemented,
+observation tagging writes nothing and logs a one-time notice.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -315,13 +319,11 @@ tagging falls back to the no-model append path.
 | `recall.intentClassifier` | boolean | `false` | Classify query intent to steer retrieval. |
 | `injection.enabled` | boolean | `false` | Inject a capped session snapshot into context. |
 | `injection.tokenCap` | number | `1300` | Maximum tokens injected per session. |
-| `observations.enabled` | boolean | `false` | Tag per-turn observations. |
+| `observations.enabled` | boolean | `false` | Reserve per-turn observation tagging for the future structured-extraction release; no raw sidecar is written today. |
 | `observations.model` | string | host default | Optional model profile for future extraction; when omitted, use the host's configured summarization/fast model. |
-| `observations.extraction` | boolean | `true` | When `false`, record raw entries with no model call. |
-| `observations.maxBytes` | number | `1048576` | Maximum retained size for `memory/observations.jsonl` in enhanced mode. |
-| `dreaming.autoEnable` | boolean | `false` | Pre-authorize enabling host dreaming without a prompt. |
-| `dreaming.enforce` | boolean | `true` | Re-warn at startup if dreaming is disabled in enhanced mode. |
-| `dreaming.blockToolsWhenOff` | boolean | `false` | If `true`, dreaming-dependent tools error instead of degrading when dreaming is off. |
+| `observations.extraction` | boolean | `true` | Reserved for the future structured-extraction release; raw observation persistence is disabled. |
+| `observations.maxBytes` | number | `1048576` | Reserved retention cap for the future structured observation sidecar. |
+| `dreaming.notify` | boolean | `true` | Warn with the host config path when dreaming is disabled in enhanced mode. |
 | `wikiBridge.enabled` | boolean | `false` | Enrich a separately installed `memory-wiki` vault, if present. |
 
 ### Compatibility
@@ -334,6 +336,11 @@ harnesses keep the core tools working and simply do not run those enhanced hooks
 ## Security model
 
 The plugin enforces a two-layer model.
+
+`activation.onStartup` registers the bounded, read-only tools with OpenClaw. Tool
+registration is not memory access: in bounded/default mode the plugin reads no
+memory until `native_memory_search`, `native_memory_fetch`, or `native_memory_answer`
+is explicitly invoked.
 
 The access boundary determines what may be read. `allowedRoots` is trusted operator
 configuration. Any caller-supplied fetch path, and any symlink that would escape a

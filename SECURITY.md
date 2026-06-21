@@ -16,13 +16,17 @@ determines what may be read, and redaction applied to what is returned.
   `maxFileBytes`.
 - `allowedRoots` entries that are empty, `.`, `..`, absolute, contain a `..`
   segment, or contain a hidden segment are rejected.
+- Enhanced snapshot and graph reads use the same boundary as bounded search/fetch.
+  No enhanced code path may read workspace memory by raw path join; unauthorized
+  `MEMORY.md`, `DREAMS.md`, or graph source files are skipped.
 
 ### Redaction (defense-in-depth)
 
 - All returned text — search snippets, fetched content, and extractive answers — is
   redacted before it leaves the plugin.
-- In enhanced mode, observation sidecar writes, session snapshot writes, and snapshot
-  prompt injection are redacted before they leave their source path.
+- In enhanced mode, session snapshot writes and snapshot prompt injection are
+  redacted before they leave their source path. Observation logging is deferred until
+  structured extraction ships.
 - Named secret patterns provide readable labels for common formats (for example API
   keys, bearer tokens and JWTs, credential URLs, and private key blocks). A
   high-entropy backstop masks unknown long tokens.
@@ -53,39 +57,43 @@ model calls, and no hook registration, and must not modify the host dreaming set
 A default upgrade therefore preserves the externally observable behavior of the prior
 release.
 
+The manifest uses `activation.onStartup` so OpenClaw can register the bounded,
+read-only tools. Registration is not memory access: bounded/default mode reads no
+memory until one of the cited-memory tools is explicitly invoked.
+
 ### Enhanced mode (opt-in)
 
 Enhanced mode adds capabilities that introduce new surfaces. Each is off by default
 and individually gated, and the access boundary, redaction, and full-file SHA-256
 citation path are the same audited code in both modes.
 
-- **Privacy and control.** Enhanced mode can write conversation-derived data to local
-  sidecars (`memory/graph.jsonl`, `memory/observations.jsonl`, and a cached session
-  snapshot) and can inject redacted memory snapshot content into the model prompt.
-  These surfaces are opt-in, size-bounded, redacted, and locally retained. Disable
-  them with `graph.enabled: false`, `observations.enabled: false`,
-  `injection.enabled: false`, and `recall.snapshotFirst: false`.
-- **Local writes.** The knowledge-graph and observation features write derived files
-  (`memory/graph.jsonl`, `memory/observations.jsonl`, and a cached session snapshot)
+- **Privacy and control.** Enhanced mode can write local sidecars
+  (`memory/graph.jsonl` and a cached session snapshot) and can inject redacted memory
+  snapshot content into the model prompt. These surfaces are opt-in, size-bounded,
+  redacted, locally retained, and derived only from authorized memory files. Disable
+  them with `graph.enabled: false`, `injection.enabled: false`, and
+  `recall.snapshotFirst: false`. `observations.enabled` is accepted for forward
+  compatibility but currently writes nothing until structured extraction ships.
+- **Local writes.** The knowledge-graph and snapshot features write derived files
+  (`memory/graph.jsonl` and a cached session snapshot)
   inside the workspace. They are derived from already-authorized memory files, are
   size-bounded, and never overwrite your source memory files (`MEMORY.md`, daily notes,
   `DREAMS.md`). These derived files are excluded from retrieval and citation, so
   machine-generated content never feeds back into what the plugin returns or cites.
   Graph extraction uses no model.
-- **Optional model call.** Observation tagging can summarize a turn with a model. This
-  is off by default even in enhanced mode; when enabled, turn content is sent to the
-  configured model (a privacy consideration), and the work runs asynchronously and
-  fail-open so it never blocks or alters a turn.
+- **Structured observations deferred.** Observation tagging will resume only when
+  structured extraction ships. In this release, the hook emits a one-time notice and
+  does not create or append `memory/observations.jsonl`; no raw conversation-derived
+  fallback is persisted.
 - **Context injection.** Snapshot injection adds capped memory to the model's context
   through a prompt-build hook. It requires the host to explicitly allow prompt
   injection for this plugin and does not run under the `claude-cli` provider.
 - **Host configuration.** Enhanced mode depends on OpenClaw's dream cycle and will
-  ask for plugin approval before enabling it. The consent prompt requires an
-  approval-capable host and channel. Denial, timeout, unavailable approvals, or a
-  bare/headless host with no approval route leave host configuration unchanged and
-  degrade dreaming-dependent enhanced features. `dreaming.autoEnable: true` is an
-  explicit pre-authorization escape hatch for non-interactive deployments. Bounded
-  mode never requests approval or changes dreaming.
+  warn when it is disabled, naming
+  `plugins.entries.memory-core.config.dreaming.enabled` as the operator-owned setting
+  to change. The plugin does not request approvals, persist consent, or mutate host
+  configuration under any setting. Bounded mode never requests approval or changes
+  dreaming.
 
 Enhanced retrieval answers remain subject to the same access boundary, redaction, and
 citation guarantees as bounded answers.

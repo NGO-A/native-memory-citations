@@ -1,8 +1,8 @@
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerHealthCheck, type HealthFinding } from "openclaw/plugin-sdk/health";
-import { graphEnabled, modeFromConfig, type PluginConfig, workspaceFromConfig } from "./core.js";
+import { authorizedMemoryFiles, graphEnabled, modeFromConfig, sourceIdForPath, type PluginConfig, workspaceFromConfig } from "./core.js";
 
 const PLUGIN_ID = "native-memory-citations";
 const EXPECTED_TOOLS = [
@@ -54,34 +54,11 @@ async function manifestTools(): Promise<string[]> {
   return manifest.contracts?.tools ?? [];
 }
 
-async function collectMemoryMtimes(root: string): Promise<number[]> {
-  const info = await stat(root).catch(() => null);
-  if (!info) {
-    return [];
-  }
-  if (info.isFile()) {
-    return [info.mtimeMs];
-  }
-  if (!info.isDirectory()) {
-    return [];
-  }
-  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
-  const mtimes: number[] = [];
-  for (const entry of entries) {
-    if (entry.name.startsWith(".") || entry.name === "node_modules") {
-      continue;
-    }
-    const child = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      mtimes.push(...await collectMemoryMtimes(child));
-    } else if (entry.isFile()) {
-      const childInfo = await stat(child).catch(() => null);
-      if (childInfo) {
-        mtimes.push(childInfo.mtimeMs);
-      }
-    }
-  }
-  return mtimes;
+async function authorizedMemoryMtimes(config: PluginConfig): Promise<number[]> {
+  const files = await authorizedMemoryFiles(config).catch(() => []);
+  return files
+    .filter((file) => sourceIdForPath(config, file.absolutePath) !== "memory/graph.jsonl")
+    .map((file) => file.loaded.mtimeMs);
 }
 
 export function registerNativeMemoryHealthChecks(): void {
@@ -126,11 +103,11 @@ export function registerNativeMemoryHealthChecks(): void {
       }
       return [{
         checkId: "native-memory-citations/dreaming-required",
-        severity: config.dreaming?.blockToolsWhenOff ? "error" : "warning",
+        severity: "warning",
         message: "native-memory-citations enhanced mode is enabled but OpenClaw memory-core dreaming is not true.",
         source: PLUGIN_ID,
         ocPath: "plugins.entries.memory-core.config.dreaming.enabled",
-        fixHint: "Enable OpenClaw dreaming or switch native-memory-citations back to mode: bounded.",
+        fixHint: "Set plugins.entries.memory-core.config.dreaming.enabled to true yourself, or switch native-memory-citations back to mode: bounded.",
       }];
     },
   });
@@ -158,10 +135,7 @@ export function registerNativeMemoryHealthChecks(): void {
           fixHint: "Run native_memory_extract to build the graph sidecar.",
         }];
       }
-      const memoryMtimes = [
-        ...await collectMemoryMtimes(path.join(workspace, "memory")),
-        ...await collectMemoryMtimes(path.join(workspace, "MEMORY.md")),
-      ];
+      const memoryMtimes = await authorizedMemoryMtimes(config);
       const newestMemory = Math.max(0, ...memoryMtimes);
       const findings: HealthFinding[] = [];
       if (newestMemory > graphInfo.mtimeMs + 1000) {

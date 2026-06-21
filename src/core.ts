@@ -10,9 +10,7 @@ export type PluginConfig = {
   maxFileBytes?: number;
   mode?: "bounded" | "enhanced";
   dreaming?: {
-    autoEnable?: boolean;
-    enforce?: boolean;
-    blockToolsWhenOff?: boolean;
+    notify?: boolean;
   };
   graph?: {
     enabled?: boolean;
@@ -180,13 +178,18 @@ const STOPWORDS = new Set([
   "been",
 ]);
 
-type LoadedFile = {
+export type LoadedFile = {
   mtimeMs: number;
   size: number;
   rawText: string;
   rawLines: string[];
   redactedLines: string[];
   sha256: string;
+};
+export type AuthorizedMemoryFile = {
+  absolutePath: string;
+  sourceId: string;
+  loaded: LoadedFile;
 };
 type InternalSearchHit = SearchHit & { rawSnippet: string; rawMatchText: string };
 const fileCache = new Map<string, LoadedFile>();
@@ -411,11 +414,6 @@ function publicHit(hit: InternalSearchHit): SearchHit {
   };
 }
 
-function graphSourceRoots(config: PluginConfig): string[] {
-  const workspace = workspaceFromConfig(config);
-  return [path.join(workspace, "memory"), path.join(workspace, "MEMORY.md")];
-}
-
 function isDerivedMemoryArtifact(config: PluginConfig, file: string): boolean {
   const sourceId = sourceIdForPath(config, file);
   return sourceId === "memory/graph.jsonl" || sourceId === "memory/observations.jsonl";
@@ -531,6 +529,47 @@ async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogge
   return loaded;
 }
 
+export async function authorizedMemoryFiles(
+  config: PluginConfig = {},
+  options: { logger?: MemoryLogger; includeDerivedArtifacts?: boolean } = {},
+): Promise<AuthorizedMemoryFile[]> {
+  const fileSizeLimit = maxFileBytes(config);
+  const files = (await Promise.all(allowedRoots(config).map((root) => collectFiles(root, options.logger)))).flat();
+  const authorized: AuthorizedMemoryFile[] = [];
+  for (const file of files.sort()) {
+    const sourceId = sourceIdForPath(config, file);
+    if (hasHiddenPathSegment(sourceId)) {
+      continue;
+    }
+    if (!isTextFile(file)) {
+      continue;
+    }
+    if (!options.includeDerivedArtifacts && isDerivedMemoryArtifact(config, file)) {
+      continue;
+    }
+    const loaded = await loadFile(file, fileSizeLimit, options.logger);
+    if (!loaded) {
+      continue;
+    }
+    authorized.push({ absolutePath: file, sourceId, loaded });
+  }
+  return authorized;
+}
+
+export async function readAuthorizedMemoryFile(
+  config: PluginConfig,
+  sourceId: string,
+  options: { logger?: MemoryLogger } = {},
+): Promise<AuthorizedMemoryFile | null> {
+  const file = await toSafePath(config, sourceId);
+  const resolvedSourceId = sourceIdForPath(config, file);
+  if (hasHiddenPathSegment(resolvedSourceId) || !isTextFile(file) || isDerivedMemoryArtifact(config, file)) {
+    return null;
+  }
+  const loaded = await loadFile(file, maxFileBytes(config), options.logger);
+  return loaded ? { absolutePath: file, sourceId: resolvedSourceId, loaded } : null;
+}
+
 type Region = { start: number; end: number; score: number; anchorIndex: number; anchorScore: number };
 
 function mergeRegions(
@@ -583,8 +622,7 @@ async function searchMemoryInternal(
   }
   const limit = clampInt(options.limit, 8, 1, 50);
   const contextLines = clampInt(options.contextLines, 2, 0, 8);
-  const fileSizeLimit = maxFileBytes(config);
-  const files = (await Promise.all(allowedRoots(config).map((root) => collectFiles(root, options.logger)))).flat();
+  const files = await authorizedMemoryFiles(config, { logger: options.logger, includeDerivedArtifacts: true });
 
   const hits: InternalSearchHit[] = [];
   for (let i = 0; i < files.length; i += SCAN_CONCURRENCY) {
@@ -592,10 +630,7 @@ async function searchMemoryInternal(
     const batch = files.slice(i, i + SCAN_CONCURRENCY);
     const batchHits = await Promise.all(batch.map(async (file) => {
       options.signal?.throwIfAborted();
-      const loaded = await loadFile(file, fileSizeLimit, options.logger);
-      if (!loaded) {
-        return [] as InternalSearchHit[];
-      }
+      const loaded = file.loaded;
       const { rawLines, redactedLines, sha256 } = loaded;
       const matches: { index: number; score: number }[] = [];
       for (let index = 0; index < rawLines.length; index += 1) {
@@ -610,7 +645,7 @@ async function searchMemoryInternal(
       if (matches.length === 0) {
         return [] as InternalSearchHit[];
       }
-      const sourceId = sourceIdForPath(config, file);
+      const sourceId = file.sourceId;
       return mergeRegions(matches, contextLines, rawLines.length).map((region) => {
         const rawSnippet = rawLines.slice(region.start, region.end + 1).join("\n").slice(0, MAX_SNIPPET_CHARS).trim();
         const redactedSnippet = redactedLines
@@ -758,19 +793,12 @@ export async function extractMemoryGraph(
   }
 
   const allowedTypes = enabledGraphEdgeTypes(config);
-  const fileSizeLimit = maxFileBytes(config);
-  const files = (await Promise.all(graphSourceRoots(config).map((root) => collectFiles(root, options.logger)))).flat();
+  const files = await authorizedMemoryFiles(config, { logger: options.logger });
   const edges: GraphEdge[] = [];
   const seen = new Set<string>();
-  for (const file of files.sort()) {
-    if (isDerivedMemoryArtifact(config, file)) {
-      continue;
-    }
-    const loaded = await loadFile(file, fileSizeLimit, options.logger);
-    if (!loaded) {
-      continue;
-    }
-    const sourceFile = sourceIdForPath(config, file);
+  for (const file of files) {
+    const loaded = file.loaded;
+    const sourceFile = file.sourceId;
     loaded.rawLines.forEach((line, index) => {
       for (const edge of extractEdgesFromLine(line, sourceFile, index + 1, allowedTypes)) {
         addEdge(edges, seen, edge);

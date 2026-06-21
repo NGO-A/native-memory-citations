@@ -29,7 +29,7 @@ const BOUNDED_CONFIGS: Array<[string, Record<string, unknown>]> = [
       recall: { semantic: true, rerank: true, snapshotFirst: true },
       injection: { enabled: true },
       observations: { enabled: true, extraction: true },
-      dreaming: { autoEnable: true },
+      dreaming: { notify: true },
     },
   ],
   [
@@ -40,7 +40,7 @@ const BOUNDED_CONFIGS: Array<[string, Record<string, unknown>]> = [
       recall: { semantic: true, rerank: true, snapshotFirst: true },
       injection: { enabled: true },
       observations: { enabled: true, extraction: true },
-      dreaming: { autoEnable: true },
+      dreaming: { notify: true },
       wikiBridge: { enabled: true },
     },
   ],

@@ -108,6 +108,42 @@ describe("native memory citations core", () => {
     expect(firstText).toContain("\"extractedAt\":\"1970-01-01T00:00:00.000Z\"");
   });
 
+  it("extracts graph edges only from configured allowedRoots", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "MEMORY.md"), "Private Person works at Private Graph Co.\n");
+    await writeFile(path.join(workspace, "USER.md"), "Public Person works at Public Graph Co.\n");
+
+    const config = {
+      workspace,
+      mode: "enhanced" as const,
+      allowedRoots: ["USER.md"],
+      graph: { enabled: true },
+    };
+    const result = await extractMemoryGraph(config);
+    const graph = await readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
+
+    expect(result.enabled).toBe(true);
+    expect(graph).toContain("Public Graph Co");
+    expect(graph).not.toContain("Private Graph Co");
+  });
+
+  it("honors sharedMode during enhanced graph extraction", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "MEMORY.md"), "Private Person works at Shared Mode Secret Co.\n");
+    await writeFile(path.join(workspace, "USER.md"), "Shared Person works at Shared Mode Public Co.\n");
+
+    await extractMemoryGraph({
+      workspace,
+      mode: "enhanced",
+      sharedMode: true,
+      graph: { enabled: true },
+    });
+    const graph = await readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
+
+    expect(graph).toContain("Shared Mode Public Co");
+    expect(graph).not.toContain("Shared Mode Secret Co");
+  });
+
   it("queries graph paths with depth caps and cycle prevention", async () => {
     const workspace = await fixtureWorkspace();
     await writeFile(

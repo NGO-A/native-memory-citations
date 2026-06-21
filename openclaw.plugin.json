@@ -4,7 +4,7 @@
     "onStartup": true
   },
   "name": "Native Memory Citations",
-  "description": "Search and fetch local OpenClaw memory with source citations and extractive cited answers.",
+  "description": "Cited, access-bounded local-memory retrieval for OpenClaw: access boundary, redaction, citations, and opt-in enhanced memory sidecars.",
   "configSchema": {
     "type": "object",
     "properties": {
@@ -43,17 +43,9 @@
       "dreaming": {
         "type": "object",
         "properties": {
-          "autoEnable": {
+          "notify": {
             "type": "boolean",
-            "description": "In enhanced mode, pre-authorize the dreaming guard to enable OpenClaw dreaming without prompting. Default false."
-          },
-          "enforce": {
-            "type": "boolean",
-            "description": "In enhanced mode, warn when dreaming-dependent features run without host dreaming."
-          },
-          "blockToolsWhenOff": {
-            "type": "boolean",
-            "description": "In enhanced mode, make dreaming-dependent tools fail hard when dreaming is off."
+            "description": "In enhanced mode, warn when host memory-core dreaming is off. Default true."
           }
         },
         "additionalProperties": false
@@ -145,7 +137,7 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Enhanced mode placeholder for observation tagging. Default false."
+            "description": "Enhanced mode placeholder for future structured observation tagging. Default false."
           },
           "model": {
             "type": "string",
@@ -153,7 +145,7 @@
           },
           "extraction": {
             "type": "boolean",
-            "description": "When false, observation tagging uses raw append fallback. Default true."
+            "description": "Reserved for the future structured-extraction release; raw observation persistence is disabled."
           },
           "maxBytes": {
             "type": "number",
@@ -175,7 +167,7 @@
     },
     "additionalProperties": false
   },
-  "version": "2026.6.10",
+  "version": "2026.6.11",
   "contracts": {
     "tools": [
       "native_memory_search",

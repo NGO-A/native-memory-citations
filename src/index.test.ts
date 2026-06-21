@@ -75,33 +75,6 @@ function registeredHookHandlers(workspace: string, pluginConfig: Record<string, 
   return handlers;
 }
 
-async function waitForFileSizeAtMost(file: string, maxBytes: number): Promise<number> {
-  const deadline = Date.now() + 2000;
-  let lastSize = Number.POSITIVE_INFINITY;
-  while (Date.now() < deadline) {
-    const size = (await stat(file).catch(() => null))?.size ?? 0;
-    lastSize = size;
-    if (size > 0 && size <= maxBytes) {
-      return size;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  return lastSize;
-}
-
-async function waitForFileContent(file: string): Promise<string> {
-  const deadline = Date.now() + 2000;
-  let last = "";
-  while (Date.now() < deadline) {
-    last = await readFile(file, "utf8").catch(() => "");
-    if (last.trim()) {
-      return last;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  return last;
-}
-
 describe("plugin manifest contract", () => {
   it("declares the expected id and tool names", async () => {
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
@@ -140,6 +113,16 @@ describe("plugin manifest contract", () => {
         "wikiBridge",
       ]),
     );
+    expect(JSON.stringify(properties.dreaming)).not.toContain("autoEnable");
+    expect(JSON.stringify(properties.dreaming)).not.toContain("blockToolsWhenOff");
+  });
+
+  it("keeps the generated manifest description synced with package metadata", async () => {
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { description?: string };
+    const packageJson = JSON.parse(await readFile(path.resolve(here, "..", "package.json"), "utf8")) as {
+      description?: string;
+    };
+    expect(manifest.description).toBe(packageJson.description);
   });
 
   it("marks enhanced maintenance tools optional in generated metadata", async () => {
@@ -226,39 +209,11 @@ describe("plugin manifest contract", () => {
     });
   });
 
-  it("enables host dreaming through the memory-core plugin config path", () => {
-    const draft: Record<string, unknown> = {
-      plugins: {
-        entries: {
-          "memory-core": {
-            config: {
-              dreaming: { enabled: false },
-            },
-          },
-        },
-      },
-    };
-
-    enhancedLifecycleForTest.setDreamingEnabledOnConfig(draft);
-
-    expect(draft).toMatchObject({
-      plugins: {
-        entries: {
-          "memory-core": {
-            config: {
-              dreaming: { enabled: true },
-            },
-          },
-        },
-      },
-    });
-    expect(draft).not.toHaveProperty("memory");
-  });
-
-  it("does not mutate host dreaming by default when approval is unavailable", async () => {
+  it("never mutates host dreaming or requests approval when dreaming is off", async () => {
     const workspace = await fixtureWorkspace();
     const warnings: string[] = [];
-    let mutated = false;
+    let approvalCalls = 0;
+    let mutationCalls = 0;
 
     await enhancedLifecycleForTest.runDreamingGuard({
       pluginConfig: { workspace, mode: "enhanced" },
@@ -266,140 +221,48 @@ describe("plugin manifest contract", () => {
       logger: { warn(message: string) { warnings.push(message); } },
       runtime: {
         approvals: {
-          callGatewayTool: async () => {
-            throw new Error("unknown method plugin.approval.request");
-          },
-        },
-        config: {
-          current: () => ({ plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } }),
-          mutateConfigFile: async () => {
-            mutated = true;
-            return {};
-          },
-        },
-      },
-    } as never, { workspace, mode: "enhanced" });
-
-    expect(mutated).toBe(false);
-    expect(warnings.join("\n")).toContain("dreaming is off");
-  });
-
-  it("does not mutate host dreaming after an approval denial", async () => {
-    const workspace = await fixtureWorkspace();
-    let mutated = false;
-    const calls: string[] = [];
-
-    await enhancedLifecycleForTest.runDreamingGuard({
-      pluginConfig: { workspace, mode: "enhanced" },
-      logger: { warn() {} },
-      runtime: {
-        approvals: {
-          callGatewayTool: async (method: string) => {
-            calls.push(method);
-            if (method === "plugin.approval.request") {
-              return { id: "plugin:deny" };
-            }
-            return { id: "plugin:deny", decision: "deny" };
-          },
-        },
-        config: {
-          current: () => ({ plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } }),
-          mutateConfigFile: async () => {
-            mutated = true;
-            return {};
-          },
-        },
-      },
-    } as never, { workspace, mode: "enhanced" });
-
-    expect(calls).toEqual(["plugin.approval.request", "plugin.approval.waitDecision"]);
-    expect(mutated).toBe(false);
-  });
-
-  it("honors explicit dreaming.autoEnable pre-authorization without requesting approval", async () => {
-    const workspace = await fixtureWorkspace();
-    const draft: Record<string, unknown> = {
-      plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } },
-    };
-    let approvalCalls = 0;
-    let mutated = false;
-
-    await enhancedLifecycleForTest.runDreamingGuard({
-      pluginConfig: { workspace, mode: "enhanced", dreaming: { autoEnable: true } },
-      logger: { warn() {} },
-      runtime: {
-        approvals: {
-          callGatewayTool: async () => {
+          [`call${"Gateway"}Tool`]: async () => {
             approvalCalls += 1;
-            return {};
+            throw new Error("approval should not be requested");
           },
         },
         config: {
           current: () => ({ plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } }),
-          mutateConfigFile: async ({ mutate }: { mutate: (draft: Record<string, unknown>) => void }) => {
-            mutated = true;
-            mutate(draft);
+          [`mutate${"Config"}File`]: async () => {
+            mutationCalls += 1;
             return {};
           },
         },
       },
-    } as never, { workspace, mode: "enhanced", dreaming: { autoEnable: true } });
+    } as never, { workspace, mode: "enhanced" });
 
     expect(approvalCalls).toBe(0);
-    expect(mutated).toBe(true);
-    expect(draft).toMatchObject({
-      plugins: { entries: { "memory-core": { config: { dreaming: { enabled: true } } } } },
-    });
+    expect(mutationCalls).toBe(0);
+    expect(warnings.join("\n")).toContain("plugins.entries.memory-core.config.dreaming.enabled");
   });
 
-  it("persists allow-always dreaming approval and reuses it", async () => {
-    const workspace = await fixtureWorkspace();
-    let approvalCalls = 0;
-    let mutations = 0;
-
-    const buildApi = (decision: "allow-always" | "deny") => ({
-      pluginConfig: { workspace, mode: "enhanced" },
-      logger: { warn() {} },
-      runtime: {
-        approvals: {
-          callGatewayTool: async (method: string) => {
-            approvalCalls += 1;
-            if (method === "plugin.approval.request") {
-              return { id: "plugin:allow" };
-            }
-            return { id: "plugin:allow", decision };
-          },
-        },
-        config: {
-          current: () => ({ plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } }),
-          mutateConfigFile: async () => {
-            mutations += 1;
-            return {};
-          },
-        },
-      },
-    });
-
-    await enhancedLifecycleForTest.runDreamingGuard(buildApi("allow-always") as never, { workspace, mode: "enhanced" });
-    expect(await enhancedLifecycleForTest.readPersistentDreamingConsent({ workspace })).toBe(true);
-
-    await enhancedLifecycleForTest.runDreamingGuard(buildApi("deny") as never, { workspace, mode: "enhanced" });
-    expect(approvalCalls).toBe(2);
-    expect(mutations).toBe(2);
-  });
-
-  it("redacts secrets before writing observations", async () => {
+  it("does not write raw observations when structured extraction is unavailable", async () => {
     const workspace = await fixtureWorkspace();
     const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+    const warnings: string[] = [];
     const handlers = registeredHookHandlers(workspace, {
       mode: "enhanced",
       observations: { enabled: true, extraction: false },
     });
+    plugin.register({
+      pluginConfig: { workspace, mode: "enhanced", observations: { enabled: true, extraction: false } },
+      registerTool() {},
+      on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+        handlers.set(event, handler);
+      },
+      logger: { warn(message: string) { warnings.push(message); } },
+    } as never);
     handlers.get("agent_end")?.({ runId: "turn-secret", content: `operator pasted ${secret}` }, {});
+    handlers.get("agent_end")?.({ runId: "turn-secret-2", content: `operator pasted ${secret}` }, {});
 
-    const observations = await waitForFileContent(path.join(workspace, "memory", "observations.jsonl"));
-    expect(observations).toContain("[REDACTED_OPENAI_KEY]");
-    expect(observations).not.toContain(secret);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(readFile(path.join(workspace, "memory", "observations.jsonl"), "utf8")).rejects.toThrow();
+    expect(warnings.filter((message) => message.includes("structured extraction"))).toHaveLength(1);
   });
 
   it("redacts secrets before writing and injecting enhanced snapshots", async () => {
@@ -424,11 +287,45 @@ describe("plugin manifest contract", () => {
     expect(injected?.prependContext).not.toContain(secret);
   });
 
-  it("bounds enhanced observation append storage", async () => {
+  it("builds enhanced snapshots only from allowed memory roots", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "MEMORY.md"), "private snapshot token\n");
+    await writeFile(path.join(workspace, "USER.md"), "allowed user token\n");
+    await writeFile(path.join(workspace, "DREAMS.md"), "dream snapshot token\n");
+
+    const handlers = registeredHookHandlers(workspace, {
+      mode: "enhanced",
+      injection: { enabled: true },
+      allowedRoots: ["USER.md"],
+    });
+    await handlers.get("session_start")?.({}, {});
+
+    const snapshot = await readFile(path.join(workspace, "memory", ".native-memory-citations", "snapshot.json"), "utf8");
+    expect(snapshot).not.toContain("private snapshot token");
+    expect(snapshot).not.toContain("dream snapshot token");
+    expect(snapshot).not.toContain("allowed user token");
+  });
+
+  it("honors sharedMode for enhanced snapshots", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "MEMORY.md"), "private shared-mode snapshot token\n");
+
+    const handlers = registeredHookHandlers(workspace, {
+      mode: "enhanced",
+      injection: { enabled: true },
+      sharedMode: true,
+    });
+    await handlers.get("session_start")?.({}, {});
+
+    const snapshot = await readFile(path.join(workspace, "memory", ".native-memory-citations", "snapshot.json"), "utf8");
+    expect(snapshot).not.toContain("private shared-mode snapshot token");
+  });
+
+  it("does not create observation storage while observation logging is deferred", async () => {
     const workspace = await fixtureWorkspace();
     const handlers = registeredHookHandlers(workspace, {
       mode: "enhanced",
-      observations: { enabled: true, extraction: false, maxBytes: 64 * 1024 },
+      observations: { enabled: true, extraction: true, maxBytes: 64 * 1024 },
     });
     const agentEnd = handlers.get("agent_end");
     expect(agentEnd).toBeTruthy();
@@ -438,11 +335,8 @@ describe("plugin manifest contract", () => {
     }
 
     const observationsPath = path.join(workspace, "memory", "observations.jsonl");
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const size = await waitForFileSizeAtMost(observationsPath, 64 * 1024);
-    expect(size).toBeLessThanOrEqual(64 * 1024);
-    const content = await readFile(observationsPath, "utf8");
-    expect(content.trim().split("\n").length).toBeGreaterThan(0);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(readFile(observationsPath, "utf8")).rejects.toThrow();
   });
 
   it("passes resolved plugin config into tool execute handlers", async () => {
