@@ -72,6 +72,36 @@ jobs:
         working-directory: clawhub-source
         run: bun install --frozen-lockfile
 
+      - name: Harden trusted publish diagnostics
+        run: |
+          set -euo pipefail
+          if [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" && -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "GitHub Actions OIDC request environment is present."
+          else
+            echo "GitHub Actions OIDC request environment is missing."
+          fi
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = "clawhub-source/packages/clawhub/src/cli/commands/packages.ts";
+          let source = fs.readFileSync(path, "utf8");
+          source = source.replace(
+            `  if (!hasGitHubActionsOidcEnv()) {
+    return await requireAuthToken();
+  }`,
+            `  if (!hasGitHubActionsOidcEnv()) {
+    throw new Error("GitHub Actions OIDC environment is not available; refusing token fallback in CI.");
+  }`,
+          );
+          source = source.replace(
+            `    if (params.spinner) {
+      params.spinner.text = "Trusted publishing unavailable, falling back to ClawHub token";
+    }
+    return await requireAuthToken();`,
+            `    throw error;`,
+          );
+          fs.writeFileSync(path, source);
+          NODE
+
       - name: Pack for ClawHub
         run: |
           set -euo pipefail
