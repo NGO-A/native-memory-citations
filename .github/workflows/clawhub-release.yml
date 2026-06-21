@@ -16,6 +16,11 @@ on:
         required: true
         default: latest
         type: string
+      source_ref:
+        description: Git ref to package and publish
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -29,6 +34,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source_ref || github.ref }}
           fetch-depth: 0
 
       - name: Set up Node
@@ -58,7 +64,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: openclaw/clawhub
-          ref: facf20ceb6cc459e2872d941e71335a784bbc55c
+          ref: 6f28659e7bfb5ae21e1bcc2d6896fea9c0a7f698
           path: clawhub-source
           persist-credentials: false
 
@@ -78,17 +84,19 @@ jobs:
         env:
           DRY_RUN: ${{ inputs.dry_run }}
           PUBLISH_TAG: ${{ inputs.publish_tag }}
+          SOURCE_REF: ${{ inputs.source_ref || github.ref }}
         run: |
           set -euo pipefail
           package_path="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(".local/clawhub/pack.json","utf8")); if (!p.path) process.exit(1); console.log(p.path)')"
+          source_commit="$(git rev-parse HEAD)"
           publish_args=(
             package
             publish
             "${package_path}"
             --tags "${PUBLISH_TAG}"
             --source-repo "${GITHUB_REPOSITORY}"
-            --source-commit "${GITHUB_SHA}"
-            --source-ref "${GITHUB_REF}"
+            --source-commit "${source_commit}"
+            --source-ref "${SOURCE_REF}"
             --source-path "."
             --json
           )
@@ -96,4 +104,3 @@ jobs:
             publish_args+=(--dry-run)
           fi
           bun clawhub-source/packages/clawhub/src/cli.ts "${publish_args[@]}"
-
