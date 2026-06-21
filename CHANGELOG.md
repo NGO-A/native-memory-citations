@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.12
+
+- Packaging: republish as a verified ClawPack artifact via OIDC trusted
+  publishing; no functional changes from 2026.6.11.
+
 ## 2026.6.11
 
 - Security: routes enhanced snapshot and graph reads through the same access
