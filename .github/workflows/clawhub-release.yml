@@ -22,96 +22,19 @@ on:
         default: ""
         type: string
 
-permissions:
-  contents: read
-  id-token: write
+permissions: {}
 
 jobs:
   publish-clawhub:
-    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
     environment: clawhub-plugin-release
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.source_ref || github.ref }}
-          fetch-depth: 0
-
-      - name: Set up Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          cache: npm
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install plugin dependencies
-        run: npm ci
-
-      - name: Build and check manifest
-        run: npm run plugin:build:check
-
-      - name: Validate plugin metadata
-        run: npx openclaw plugins validate --entry ./dist/index.js
-
-      - name: Test
-        run: npm test
-
-      - name: Checkout pinned ClawHub CLI
-        uses: actions/checkout@v6
-        with:
-          repository: openclaw/clawhub
-          ref: 6f28659e7bfb5ae21e1bcc2d6896fea9c0a7f698
-          path: clawhub-source
-          persist-credentials: false
-
-      - name: Install ClawHub CLI dependencies
-        working-directory: clawhub-source
-        run: bun install --frozen-lockfile
-
-      - name: Disable ClawHub token fallback
-        run: |
-          set -euo pipefail
-          if [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" && -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
-            echo "GitHub Actions OIDC request environment is present."
-          else
-            echo "GitHub Actions OIDC request environment is missing."
-          fi
-          perl -0pi -e 's/  if \(!hasGitHubActionsOidcEnv\(\)\) \{\n    return await requireAuthToken\(\);\n  \}/  if (!hasGitHubActionsOidcEnv()) {\n    throw new Error("GitHub Actions OIDC environment is not available; refusing token fallback in CI.");\n  \}/' clawhub-source/packages/clawhub/src/cli/commands/packages.ts
-          perl -0pi -e 's/    if \(params\.spinner\) \{\n      params\.spinner\.text = "Trusted publishing unavailable, falling back to ClawHub token";\n    \}\n    return await requireAuthToken\(\);/    throw error;/' clawhub-source/packages/clawhub/src/cli/commands/packages.ts
-
-      - name: Pack for ClawHub
-        run: |
-          set -euo pipefail
-          mkdir -p .local/clawhub
-          bun clawhub-source/packages/clawhub/src/cli.ts package pack . \
-            --pack-destination .local/clawhub \
-            --json | tee .local/clawhub/pack.json
-
-      - name: Publish to ClawHub
-        env:
-          DRY_RUN: ${{ inputs.dry_run }}
-          PUBLISH_TAG: ${{ inputs.publish_tag }}
-          SOURCE_REF: ${{ inputs.source_ref || github.ref }}
-        run: |
-          set -euo pipefail
-          package_path="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(".local/clawhub/pack.json","utf8")); if (!p.path) process.exit(1); console.log(p.path)')"
-          source_commit="$(git rev-parse HEAD)"
-          publish_args=(
-            package
-            publish
-            "${package_path}"
-            --tags "${PUBLISH_TAG}"
-            --source-repo "${GITHUB_REPOSITORY}"
-            --source-commit "${source_commit}"
-            --source-ref "${SOURCE_REF}"
-            --source-path "."
-            --json
-          )
-          if [[ "${DRY_RUN}" == "true" ]]; then
-            publish_args+=(--dry-run)
-          fi
-          bun clawhub-source/packages/clawhub/src/cli.ts "${publish_args[@]}"
+    uses: openclaw/clawhub/.github/workflows/package-publish.yml@6f28659e7bfb5ae21e1bcc2d6896fea9c0a7f698
+    with:
+      source: NGO-A/native-memory-citations
+      ref: ${{ inputs.source_ref || github.ref }}
+      dry_run: ${{ inputs.dry_run == 'true' }}
+      tags: ${{ inputs.publish_tag }}
+      source_path: "."
