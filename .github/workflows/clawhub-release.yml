@@ -72,6 +72,17 @@ jobs:
         working-directory: clawhub-source
         run: bun install --frozen-lockfile
 
+      - name: Disable ClawHub token fallback
+        run: |
+          set -euo pipefail
+          if [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" && -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "GitHub Actions OIDC request environment is present."
+          else
+            echo "GitHub Actions OIDC request environment is missing."
+          fi
+          perl -0pi -e 's/  if \(!hasGitHubActionsOidcEnv\(\)\) \{\n    return await requireAuthToken\(\);\n  \}/  if (!hasGitHubActionsOidcEnv()) {\n    throw new Error("GitHub Actions OIDC environment is not available; refusing token fallback in CI.");\n  \}/' clawhub-source/packages/clawhub/src/cli/commands/packages.ts
+          perl -0pi -e 's/    if \(params\.spinner\) \{\n      params\.spinner\.text = "Trusted publishing unavailable, falling back to ClawHub token";\n    \}\n    return await requireAuthToken\(\);/    throw error;/' clawhub-source/packages/clawhub/src/cli/commands/packages.ts
+
       - name: Pack for ClawHub
         run: |
           set -euo pipefail
