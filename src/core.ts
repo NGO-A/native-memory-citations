@@ -109,9 +109,49 @@ export type MemoryLogger = {
   error?: (message: string) => void;
 };
 
+type EntityCandidate = {
+  key: string;
+  label: string;
+};
+
+type EntityLabelState = {
+  counts: Map<string, number>;
+  firstSeen: Map<string, number>;
+};
+
+type GraphEdgeAccumulator = {
+  edgeMap: Map<string, Omit<GraphEdge, "extractedAt" | "from" | "to"> & { fromKey: string; toKey: string; order: number }>;
+  entityLabels: Map<string, EntityLabelState>;
+  order: number;
+};
+
 const DEFAULT_PRIVATE_ROOTS = ["memory", "MEMORY.md", "USER.md", "IDENTITY.md", "TOOLS.md"];
 const DEFAULT_SHARED_ROOTS = ["memory", "USER.md", "IDENTITY.md", "TOOLS.md"];
 const TEXT_EXTENSIONS = new Set([".md", ".txt", ".json", ".jsonl", ".yaml", ".yml"]);
+const GRAPH_ENTITY_STOPWORDS = new Set([
+  "a",
+  "about",
+  "after",
+  "also",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "in",
+  "into",
+  "is",
+  "of",
+  "on",
+  "or",
+  "the",
+  "to",
+  "with",
+]);
 const ANSWER_MIN_SCORE = 3;
 const ANSWER_MIN_TERM_RATIO = 0.5;
 const MAX_REGION_LINES = 25;
@@ -695,49 +735,189 @@ export async function searchMemory(
   return (await searchMemoryInternal(query, options)).map(publicHit);
 }
 
-function normalizeEntity(value: string): string {
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function normalizeEntityKey(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function trimEntityBoundary(value: string): string {
   return value
-    .replace(/[`*_()[\]{}]/g, "")
     .replace(/\s+/g, " ")
-    .replace(/[.,;:!?]+$/g, "")
+    .trim()
+    .replace(/^[`"'“”‘’*_~([{<\s.,;:!?-]+/g, "")
+    .replace(/[`"'“”‘’*_~)\]}> \t.,;:!?-]+$/g, "")
+    .replace(/(?:'s|’s|['’])$/iu, "")
+    .replace(/[`"'“”‘’*_~)\]}> \t.,;:!?-]+$/g, "")
     .trim();
 }
 
-function addEdge(
-  edges: GraphEdge[],
-  seen: Set<string>,
-  edge: Omit<GraphEdge, "extractedAt">,
-): void {
-  const normalized = {
-    ...edge,
-    from: normalizeEntity(edge.from),
-    to: normalizeEntity(edge.to),
-    extractedAt: GRAPH_EXTRACTED_AT,
-  };
-  if (!normalized.from || !normalized.to || normalized.from === normalized.to) {
-    return;
-  }
-  const key = `${normalized.from}\0${normalized.type}\0${normalized.to}\0${normalized.sourceFile}\0${normalized.sourceLine}`;
-  if (seen.has(key)) {
-    return;
-  }
-  seen.add(key);
-  edges.push(normalized);
+function isPunctuationOnly(value: string): boolean {
+  return !/[A-Za-z0-9]/.test(value);
 }
 
-function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: number, allowedTypes: Set<GraphEdgeType>): GraphEdge[] {
-  const edges: GraphEdge[] = [];
-  const seen = new Set<string>();
+function isGraphEntityNoise(label: string): boolean {
+  const key = normalizeEntityKey(label);
+  if (label.length < 2 || /^\d+$/.test(label) || isPunctuationOnly(label)) {
+    return true;
+  }
+  if (GRAPH_ENTITY_STOPWORDS.has(key) && !/^[A-Z]/.test(label)) {
+    return true;
+  }
+  return false;
+}
+
+function entityCandidateFromLabel(value: string): EntityCandidate | null {
+  const label = trimEntityBoundary(value);
+  if (isGraphEntityNoise(label)) {
+    return null;
+  }
+  const key = normalizeEntityKey(label);
+  if (!key) {
+    return null;
+  }
+  return { key, label };
+}
+
+function cleanEntityToken(value: string): string {
+  return trimEntityBoundary(value.replace(/^[^\p{L}\p{N}@]+|[^\p{L}\p{N}.@+-]+$/gu, ""));
+}
+
+function isEntityToken(value: string): boolean {
+  return /^[A-Z][\p{L}\p{N}@.+-]*$/u.test(value) || /^[A-Z0-9][A-Z0-9@.+-]{1,}$/u.test(value);
+}
+
+function properNounChunks(value: string): string[] {
+  const chunks: string[] = [];
+  let current: string[] = [];
+  const flush = () => {
+    if (current.length > 0) {
+      chunks.push(current.join(" "));
+      current = [];
+    }
+  };
+  for (const rawToken of value.replace(/[\r\n]+/g, " ").split(/\s+/g)) {
+    if (!rawToken) {
+      continue;
+    }
+    const startsAfterBoundary = /^[,;:!?()[\]{}]/.test(rawToken);
+    const endsWithBoundary = /[,;:!?()[\]{}]$/.test(rawToken);
+    if (startsAfterBoundary) {
+      flush();
+    }
+    const token = cleanEntityToken(rawToken);
+    const key = normalizeEntityKey(token);
+    if (token && isEntityToken(token) && !GRAPH_ENTITY_STOPWORDS.has(key)) {
+      current.push(token);
+    } else {
+      flush();
+    }
+    if (endsWithBoundary) {
+      flush();
+    }
+  }
+  flush();
+  return chunks;
+}
+
+function entityCandidateFromSpan(value: string): EntityCandidate | null {
+  const direct = entityCandidateFromLabel(value);
+  if (direct && properNounChunks(direct.label).length === 1 && properNounChunks(direct.label)[0] === direct.label) {
+    return direct;
+  }
+  const candidates = properNounChunks(value)
+    .map(entityCandidateFromLabel)
+    .filter((candidate): candidate is EntityCandidate => Boolean(candidate))
+    .sort((a, b) => b.label.split(/\s+/g).length - a.label.split(/\s+/g).length || compareText(a.label, b.label));
+  return candidates[0] ?? direct;
+}
+
+function createGraphEdgeAccumulator(): GraphEdgeAccumulator {
+  return { edgeMap: new Map(), entityLabels: new Map(), order: 0 };
+}
+
+function observeEntity(accumulator: GraphEdgeAccumulator, entity: EntityCandidate): void {
+  const state = accumulator.entityLabels.get(entity.key) ?? { counts: new Map(), firstSeen: new Map() };
+  state.counts.set(entity.label, (state.counts.get(entity.label) ?? 0) + 1);
+  if (!state.firstSeen.has(entity.label)) {
+    state.firstSeen.set(entity.label, accumulator.order);
+  }
+  accumulator.entityLabels.set(entity.key, state);
+}
+
+function preferredEntityLabel(accumulator: GraphEdgeAccumulator, key: string): string {
+  const state = accumulator.entityLabels.get(key);
+  if (!state) {
+    return key;
+  }
+  return Array.from(state.counts.entries())
+    .sort(
+      ([labelA, countA], [labelB, countB]) =>
+        countB - countA
+        || (state.firstSeen.get(labelA) ?? 0) - (state.firstSeen.get(labelB) ?? 0)
+        || compareText(labelA, labelB),
+    )[0]?.[0] ?? key;
+}
+
+function addEdge(
+  accumulator: GraphEdgeAccumulator,
+  edge: Omit<GraphEdge, "extractedAt">,
+): void {
+  const from = entityCandidateFromSpan(edge.from);
+  const to = entityCandidateFromSpan(edge.to);
+  if (!from || !to || from.key === to.key) {
+    return;
+  }
+  observeEntity(accumulator, from);
+  observeEntity(accumulator, to);
+  const key = `${from.key}\0${edge.type}\0${to.key}`;
+  const existing = accumulator.edgeMap.get(key);
+  if (
+    !existing
+    || compareText(edge.sourceFile, existing.sourceFile) < 0
+    || (edge.sourceFile === existing.sourceFile && edge.sourceLine < existing.sourceLine)
+  ) {
+    accumulator.edgeMap.set(key, {
+      fromKey: from.key,
+      toKey: to.key,
+      type: edge.type,
+      sourceFile: edge.sourceFile,
+      sourceLine: edge.sourceLine,
+      order: existing?.order ?? accumulator.order,
+    });
+  }
+  accumulator.order += 1;
+}
+
+function graphEdgesFromAccumulator(accumulator: GraphEdgeAccumulator): GraphEdge[] {
+  return Array.from(accumulator.edgeMap.values()).map((edge) => ({
+    from: preferredEntityLabel(accumulator, edge.fromKey),
+    type: edge.type,
+    to: preferredEntityLabel(accumulator, edge.toKey),
+    sourceFile: edge.sourceFile,
+    sourceLine: edge.sourceLine,
+    extractedAt: GRAPH_EXTRACTED_AT,
+  }));
+}
+
+function normalizeEntity(value: string): string {
+  return trimEntityBoundary(value).replace(/\s+/g, " ");
+}
+
+function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: number, allowedTypes: Set<GraphEdgeType>, accumulator: GraphEdgeAccumulator): void {
   const cleaned = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim();
   const properNoun = "([A-Z][\\w@.+-]*(?:\\s+[A-Z][\\w@.+-]*){0,5})";
+  const afterSource = "\\s*[`\"'“”‘’)\\]}]*\\s+";
   const target = "([^.;\\n]{2,120})";
   const patterns: Array<{ type: GraphEdgeType; re: RegExp }> = [
-    { type: "works_at", re: new RegExp(`${properNoun}\\s+(?:works|worked)\\s+(?:at|for)\\s+${target}`, "i") },
-    { type: "invested_in", re: new RegExp(`${properNoun}\\s+(?:invested in|backs|backed)\\s+${target}`, "i") },
-    { type: "founded", re: new RegExp(`${properNoun}\\s+(?:founded|co-founded|started)\\s+${target}`, "i") },
-    { type: "advises", re: new RegExp(`${properNoun}\\s+(?:advises|advised|mentors|mentor(?:ed)?)\\s+${target}`, "i") },
-    { type: "attended", re: new RegExp(`${properNoun}\\s+(?:attended|went to)\\s+${target}`, "i") },
-    { type: "mentions", re: new RegExp(`${properNoun}\\s+(?:mentions|mentioned|discusses|discussed)\\s+${target}`, "i") },
+    { type: "works_at", re: new RegExp(`${properNoun}${afterSource}(?:works|worked)\\s+(?:at|for)\\s+${target}`) },
+    { type: "invested_in", re: new RegExp(`${properNoun}${afterSource}(?:invested in|backs|backed)\\s+${target}`) },
+    { type: "founded", re: new RegExp(`${properNoun}${afterSource}(?:founded|co-founded|started)\\s+${target}`) },
+    { type: "advises", re: new RegExp(`${properNoun}${afterSource}(?:advises|advised|mentors|mentor(?:ed)?)\\s+${target}`) },
+    { type: "attended", re: new RegExp(`${properNoun}${afterSource}(?:attended|went to)\\s+${target}`) },
+    { type: "mentions", re: new RegExp(`${properNoun}${afterSource}(?:mentions|mentioned|discusses|discussed)\\s+${target}`) },
   ];
   for (const pattern of patterns) {
     if (!allowedTypes.has(pattern.type)) {
@@ -745,10 +925,9 @@ function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: numb
     }
     const match = cleaned.match(pattern.re);
     if (match?.[1] && match[2]) {
-      addEdge(edges, seen, { from: match[1], type: pattern.type, to: match[2], sourceFile, sourceLine });
+      addEdge(accumulator, { from: match[1], type: pattern.type, to: match[2], sourceFile, sourceLine });
     }
   }
-  return edges;
 }
 
 async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {
@@ -794,23 +973,21 @@ export async function extractMemoryGraph(
 
   const allowedTypes = enabledGraphEdgeTypes(config);
   const files = await authorizedMemoryFiles(config, { logger: options.logger });
-  const edges: GraphEdge[] = [];
-  const seen = new Set<string>();
+  const accumulator = createGraphEdgeAccumulator();
   for (const file of files) {
     const loaded = file.loaded;
     const sourceFile = file.sourceId;
     loaded.rawLines.forEach((line, index) => {
-      for (const edge of extractEdgesFromLine(line, sourceFile, index + 1, allowedTypes)) {
-        addEdge(edges, seen, edge);
-      }
+      extractEdgesFromLine(line, sourceFile, index + 1, allowedTypes, accumulator);
     });
   }
+  const edges = graphEdgesFromAccumulator(accumulator);
   edges.sort(
     (a, b) =>
-      a.from.localeCompare(b.from)
-      || a.type.localeCompare(b.type)
-      || a.to.localeCompare(b.to)
-      || a.sourceFile.localeCompare(b.sourceFile)
+      compareText(a.from, b.from)
+      || compareText(a.type, b.type)
+      || compareText(a.to, b.to)
+      || compareText(a.sourceFile, b.sourceFile)
       || a.sourceLine - b.sourceLine,
   );
   const file = graphPath(config);

@@ -78,6 +78,81 @@ Reload the Gateway after installing so the plugin host exposes the tools.
 Supported memory file types are `.md`, `.txt`, `.json`, `.jsonl`, `.yaml`, and
 `.yml`. Files with other extensions are not scanned.
 
+## Getting started
+
+### Bounded mode (default) — no configuration needed
+
+Bounded mode is the default and works read-only out of the box.
+
+1. Install the plugin and **reload the Gateway** so the plugin host registers its tools.
+2. Start a **new agent session.** A session that was already running keeps the tool
+   list it started with and will not see newly registered tools until it restarts —
+   if a tool seems missing right after install, this is almost always why.
+3. Confirm the three bounded tools are available: `native_memory_search`,
+   `native_memory_fetch`, `native_memory_answer`.
+
+That is the entire setup for cited, read-only retrieval. Optionally narrow what the
+plugin may read with `allowedRoots` (see [Configuration](#configuration)).
+
+### Enabling enhanced features — step by step
+
+Enhanced features are opt-in and gated **individually**. Settings live under
+`plugins.entries.native-memory-citations.config`. Turning on enhanced mode exposes the
+extra tools but does not activate any pillar by itself:
+
+```jsonc
+{
+  "plugins": {
+    "entries": {
+      "native-memory-citations": {
+        "config": {
+          "mode": "enhanced", // exposes the enhanced tools; each pillar still gated below
+          "graph": { "enabled": true } // turn on the one pillar you want
+        }
+      }
+    }
+  }
+}
+```
+
+**A visible tool is not an active one.** With `mode: "enhanced"`, `native_memory_graph`
+and `native_memory_extract` appear in the tool list immediately, but they return no data
+until the pillar is both enabled *and* built. Enable each feature deliberately:
+
+- **Knowledge graph** — set `graph.enabled: true`, reload, then **run
+  `native_memory_extract` once.** It builds `memory/graph.jsonl` from your authorized
+  memory files (only files inside `allowedRoots`). After that, `native_memory_graph`
+  returns edges. Before `native_memory_extract` has run, an empty result from
+  `native_memory_graph` is expected, not a failure.
+- **Snapshot injection** — set `injection.enabled: true` **and** grant the host hook
+  gate `plugins.entries.native-memory-citations.hooks.allowPromptInjection: true`
+  (note: `hooks`, a sibling of `config`). Injection dispatches only on the embedded
+  runner; under the `claude-cli` or Codex runners the hook does not fire, so
+  injection is inactive there. The tools still work — only the hook-driven behavior
+  is skipped.
+- **Observation logging** — currently **deferred.** `observations.enabled` does not
+  write anything today; it emits a one-time notice and reserves the feature for the
+  future structured-extraction release. Setting it has no effect for now.
+- **Dreaming-dependent features** — if OpenClaw `memory-core` dreaming is off, the
+  plugin **does not change your host config.** It detects the state and tells you to
+  enable it yourself: set `plugins.entries.memory-core.config.dreaming.enabled: true`
+  if you want those features active.
+
+See [Configuration (enhanced keys)](#configuration-enhanced-keys) for the full key
+reference and defaults.
+
+### Two things to expect
+
+- **Reload after every change.** Tools and config bind when a session — or the
+  Gateway — starts. Enabling the plugin, switching modes, or editing config has no
+  effect on a session that is already running. Reload the Gateway and start a fresh
+  session for changes to take effect.
+- **Runner matters for hooks, not tools.** All five tools register on any runner
+  (embedded, `claude-cli`, Codex). The hook-driven features (snapshot injection, and
+  the deferred observation logging) dispatch **only on the embedded runner**; on
+  `claude-cli` or Codex the tools work normally but those hooks stay inactive, by
+  design.
+
 ## Intended use
 
 Native Memory Citations is intended for OpenClaw deployments where an agent needs

@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.14
+
+- Changed: improve deterministic graph extraction with stricter entity-boundary
+  cleanup, normal-form canonicalization, and conservative stopword/noise filtering.
+  The extractor remains zero-LLM and deterministic; re-run `native_memory_extract`
+  to rebuild `graph.jsonl` with cleaner, deduplicated labels. Edge count may
+  decrease as duplicate canonical edges merge.
+
 ## 2026.6.13
 
 - Packaging: publish the npm tarball as the verified ClawPack artifact via OIDC

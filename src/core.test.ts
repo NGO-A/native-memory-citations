@@ -58,6 +58,10 @@ function expectNoRawValue(serialized: string, rawValue: string): void {
   expect(serialized).not.toContain(rawValue);
 }
 
+function parseGraphJsonl(text: string): Array<Record<string, unknown>> {
+  return text.trim().split(/\r?\n/g).filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 describe("native memory citations core", () => {
   it("searches memory with line citations", async () => {
     const workspace = await fixtureWorkspace();
@@ -106,6 +110,46 @@ describe("native memory citations core", () => {
     expect(secondText).toBe(firstText);
     expect(firstText).toContain("\"type\":\"works_at\"");
     expect(firstText).toContain("\"extractedAt\":\"1970-01-01T00:00:00.000Z\"");
+  });
+
+  it("cleans, canonicalizes, and filters deterministic graph entities conservatively", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "graph-quality.md"),
+      [
+        "\"Alice Example\" works at Native   Memory Labs's.",
+        "ALICE EXAMPLE works at [Native Memory Labs].",
+        "Project Alpha mentions (Citation Engine).",
+        "Noise Person works at the.",
+        "Number Person works at 12345.",
+        "An works at Go.",
+        "Acme Corp works at Beta Labs.",
+        "Acme Corporation works at Beta Labs.",
+      ].join("\n"),
+    );
+
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    const first = await extractMemoryGraph(config);
+    const firstText = await readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
+    const second = await extractMemoryGraph(config);
+    const secondText = await readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
+    const edges = parseGraphJsonl(firstText);
+
+    expect(first.edgeCount).toBe(5);
+    expect(second.edgeCount).toBe(first.edgeCount);
+    expect(secondText).toBe(firstText);
+    expect(edges).toEqual([
+      expect.objectContaining({ from: "Acme Corp", type: "works_at", to: "Beta Labs" }),
+      expect.objectContaining({ from: "Acme Corporation", type: "works_at", to: "Beta Labs" }),
+      expect.objectContaining({ from: "Alice Example", type: "works_at", to: "Native Memory Labs" }),
+      expect.objectContaining({ from: "An", type: "works_at", to: "Go" }),
+      expect.objectContaining({ from: "Project Alpha", type: "mentions", to: "Citation Engine" }),
+    ]);
+    expect(firstText).not.toContain("ALICE EXAMPLE");
+    expect(firstText).not.toContain("Native   Memory Labs");
+    expect(firstText).not.toContain("Native Memory Labs's");
+    expect(firstText).not.toContain("\"to\":\"the\"");
+    expect(firstText).not.toContain("12345");
   });
 
   it("extracts graph edges only from configured allowedRoots", async () => {
