@@ -194,6 +194,7 @@ const GRAPH_ENTITY_STOPWORDS = new Set([
   "standalone",
   "step",
   "tag",
+  "targeted",
   "the",
   "to",
   "trusted",
@@ -815,6 +816,9 @@ function isGraphEntityNoise(label: string): boolean {
   if (label.length < 2 || /^\d+$/.test(label) || isPunctuationOnly(label)) {
     return true;
   }
+  if (key === "current" || key === "free") {
+    return true;
+  }
   if (GRAPH_ENTITY_STOPWORDS.has(key) && !(key === "an" && label === "An")) {
     return true;
   }
@@ -1058,13 +1062,16 @@ function addCorpusMentionEdgesFromColonLine(
 
 function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: number, allowedTypes: Set<GraphEdgeType>, accumulator: GraphEdgeAccumulator): void {
   const cleaned = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim();
+  if (/^(?:Candidate|\d{1,2}:\d{2}\s+(?:MDT|UTC)):/u.test(cleaned)) {
+    return;
+  }
   const properNoun = "([A-Z][\\w@.+-]*(?:\\s+[A-Z][\\w@.+-]*){0,5})";
   const afterSource = "\\s*[`\"'“”‘’)\\]}]*\\s+";
   const target = "([^.;\\n]{2,120})";
   const patterns: Array<{ type: GraphEdgeType; re: RegExp }> = [
     { type: "works_at", re: new RegExp(`${properNoun}${afterSource}(?:works|worked)\\s+(?:at|for)\\s+${target}`) },
     { type: "invested_in", re: new RegExp(`${properNoun}${afterSource}(?:invested in|backs|backed)\\s+${target}`) },
-    { type: "founded", re: new RegExp(`${properNoun}${afterSource}(?:founded|co-founded|started)\\s+${target}`) },
+    { type: "founded", re: new RegExp(`${properNoun}${afterSource}(?:founded|co-founded)\\s+${target}`) },
     { type: "advises", re: new RegExp(`${properNoun}${afterSource}(?:advises|advised|mentors|mentor(?:ed)?)\\s+${target}`) },
     { type: "attended", re: new RegExp(`${properNoun}${afterSource}(?:attended|went to)\\s+${target}`) },
     { type: "mentions", re: new RegExp(`${properNoun}${afterSource}(?:mentions|mentioned|discusses|discussed)\\s+${target}`) },
