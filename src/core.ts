@@ -140,16 +140,68 @@ const GRAPH_ENTITY_STOPWORDS = new Set([
   "at",
   "be",
   "by",
+  "added",
+  "am",
+  "best",
+  "candidate",
+  "committed",
+  "completed",
+  "confirm",
+  "created",
+  "details",
+  "deployed",
+  "dry-run",
+  "durable",
+  "failed",
+  "final",
+  "finished",
   "for",
+  "format",
+  "fresh",
   "from",
+  "guide",
+  "head",
+  "hit",
+  "implemented",
   "in",
+  "instruction",
   "into",
   "is",
+  "later",
+  "mdt",
+  "model",
+  "models",
+  "no",
   "of",
+  "ok",
   "on",
+  "opena",
   "or",
+  "paid",
+  "pending",
+  "pm",
+  "power",
+  "primary",
+  "proof",
+  "recommended",
+  "remaining",
+  "requested",
+  "residual",
+  "reply",
+  "reset",
+  "root",
+  "shipped",
+  "standalone",
+  "step",
+  "tag",
   "the",
   "to",
+  "trusted",
+  "update",
+  "updated",
+  "utc",
+  "verified",
+  "when",
   "with",
 ]);
 const ANSWER_MIN_SCORE = 3;
@@ -789,6 +841,10 @@ function isEntityToken(value: string): boolean {
   return /^[A-Z][\p{L}\p{N}@.+-]*$/u.test(value) || /^[A-Z][A-Z0-9@.+-]{1,}$/u.test(value);
 }
 
+function isEntityContinuationToken(value: string): boolean {
+  return /^\p{N}+[\p{L}\p{N}.+-]*$/u.test(value);
+}
+
 function properNounChunks(value: string): string[] {
   const chunks: string[] = [];
   let current: string[] = [];
@@ -798,12 +854,13 @@ function properNounChunks(value: string): string[] {
       current = [];
     }
   };
-  for (const rawToken of value.replace(/[\r\n]+/g, " ").split(/\s+/g)) {
+  for (const rawToken of value.replace(/[\r\n]+/g, " ").replace(/\//g, " / ").split(/\s+/g)) {
     if (!rawToken) {
       continue;
     }
     const startsAfterBoundary = /^[,;:!?()[\]{}]/.test(rawToken);
     const endsWithBoundary = /[,;:!?()[\]{}]$/.test(rawToken);
+    const endsWithPossessive = /(?:'s|’s|['’])(?:[,;:!?()[\]{}])?$/iu.test(rawToken);
     if (startsAfterBoundary) {
       flush();
     }
@@ -811,10 +868,15 @@ function properNounChunks(value: string): string[] {
     const key = normalizeEntityKey(token);
     if (token && isEntityToken(token) && !GRAPH_ENTITY_STOPWORDS.has(key)) {
       current.push(token);
+    } else if (token && current.length > 0 && isEntityContinuationToken(token)) {
+      current.push(token);
     } else {
       flush();
     }
     if (endsWithBoundary) {
+      flush();
+    }
+    if (endsWithPossessive) {
       flush();
     }
   }
@@ -822,8 +884,14 @@ function properNounChunks(value: string): string[] {
   return chunks;
 }
 
-function entityCandidateFromSpan(value: string, options: { requireProperChunk?: boolean } = {}): EntityCandidate | null {
+function entityCandidateFromSpan(
+  value: string,
+  options: { requireProperChunk?: boolean; allowDirectLabel?: boolean } = {},
+): EntityCandidate | null {
   const direct = entityCandidateFromLabel(value);
+  if (options.allowDirectLabel && direct) {
+    return direct;
+  }
   const chunks = properNounChunks(direct?.label ?? value);
   if (!options.requireProperChunk && direct && chunks.length === 1 && chunks[0] === direct.label) {
     return direct;
@@ -866,7 +934,7 @@ function addEdge(
   accumulator: GraphEdgeAccumulator,
   edge: Omit<GraphEdge, "extractedAt">,
 ): void {
-  const from = entityCandidateFromSpan(edge.from);
+  const from = entityCandidateFromSpan(edge.from, { allowDirectLabel: true });
   const to = entityCandidateFromSpan(edge.to, { requireProperChunk: true });
   if (!from || !to || from.key === to.key) {
     return;
@@ -907,6 +975,87 @@ function normalizeEntity(value: string): string {
   return trimEntityBoundary(value).replace(/\s+/g, " ");
 }
 
+const CORPUS_GRAPH_RELATION_RE =
+  /\b(?:approved(?: using)?|available|configured|confirmed|contains|created|enabled|generates|has|installed|lives|mounted|passed|prefers|published|reachable|registered|registers|requires|routes|run|runs|stored|supports|use|uses|verified|under|via|plus)\b/giu;
+const CORPUS_GRAPH_CLASS_PHRASE_RE =
+  /\b(?:(?:native|local|private|public|canonical|shared|subordinate|strong|big|cheap|safe|scriptable|configured)\s+)?[A-Z][\w@.+-]*(?:\s+[A-Z0-9][\w@.+-]*){0,5}\s+(?:access|address|addresses|artifact|benchmark|candidate|CLI|factory|hub|model|node|package|plan|plugin|project|repo|route|router|setup|skill|skills|stack|storage|tool|tools|voice|workspace|workflow|worker)\b/gu;
+
+function graphColonParts(line: string): { subject: string; body: string } | null {
+  const match = line.match(/^(.{2,90}?):\s+(.{4,})$/u);
+  if (!match?.[1] || !match[2]) {
+    return null;
+  }
+  const subject = trimEntityBoundary(match[1].replace(/^#+\s*/u, "").replace(/`+/g, ""));
+  const firstSubjectWord = normalizeEntityKey(subject.split(/\s+/g)[0] ?? "");
+  if (
+    !subject
+    || !/[A-Za-z]/.test(subject)
+    || /[/\\]/.test(subject)
+    || /\b(?:MDT|UTC|AM|PM)\b/u.test(subject)
+    || subject.split(/\s+/g).length < 2
+    || (firstSubjectWord !== "local" && GRAPH_ENTITY_STOPWORDS.has(firstSubjectWord))
+    || isGraphEntityNoise(subject)
+  ) {
+    return null;
+  }
+  return { subject, body: match[2] };
+}
+
+function addCorpusMentionEdgesFromColonLine(
+  cleaned: string,
+  sourceFile: string,
+  sourceLine: number,
+  allowedTypes: Set<GraphEdgeType>,
+  accumulator: GraphEdgeAccumulator,
+): void {
+  if (!allowedTypes.has("mentions")) {
+    return;
+  }
+  const parts = graphColonParts(cleaned);
+  if (!parts) {
+    return;
+  }
+
+  const targets = new Set<string>();
+  const addTargets = (text: string): void => {
+    for (const chunk of properNounChunks(text)) {
+      if (targets.size >= 12) {
+        return;
+      }
+      const candidate = entityCandidateFromSpan(chunk, { requireProperChunk: true });
+      if (candidate && candidate.key !== normalizeEntityKey(parts.subject)) {
+        targets.add(candidate.label);
+      }
+    }
+  };
+  const addClassPhraseTargets = (text: string): void => {
+    for (const match of text.matchAll(CORPUS_GRAPH_CLASS_PHRASE_RE)) {
+      addTargets(match[0]);
+    }
+  };
+
+  for (const clause of parts.body.split(/[.;]/gu)) {
+    if (!clause.trim()) {
+      continue;
+    }
+    const relationMatches = Array.from(clause.matchAll(CORPUS_GRAPH_RELATION_RE));
+    for (const match of relationMatches) {
+      const afterRelation = clause.slice((match.index ?? 0) + match[0].length);
+      addTargets(afterRelation);
+      const beforeRelation = clause.slice(0, match.index ?? 0);
+      if (/^(?:approved|confirmed|installed|plus|verified)/iu.test(match[0])) {
+        addTargets(beforeRelation.slice(-120));
+      }
+      addClassPhraseTargets(beforeRelation);
+    }
+    addClassPhraseTargets(clause);
+  }
+
+  for (const target of Array.from(targets).sort(compareText)) {
+    addEdge(accumulator, { from: parts.subject, type: "mentions", to: target, sourceFile, sourceLine });
+  }
+}
+
 function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: number, allowedTypes: Set<GraphEdgeType>, accumulator: GraphEdgeAccumulator): void {
   const cleaned = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim();
   const properNoun = "([A-Z][\\w@.+-]*(?:\\s+[A-Z][\\w@.+-]*){0,5})";
@@ -929,6 +1078,7 @@ function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: numb
       addEdge(accumulator, { from: match[1], type: pattern.type, to: match[2], sourceFile, sourceLine });
     }
   }
+  addCorpusMentionEdgesFromColonLine(cleaned, sourceFile, sourceLine, allowedTypes, accumulator);
 }
 
 async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {

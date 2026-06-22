@@ -337,6 +337,8 @@ individually. Doing nothing leaves the plugin in bounded mode.
  queries it with a hard depth cap and cycle prevention. This pillar is functional in
  this release. Extraction uses the same `allowedRoots`, `sharedMode`, hidden-path,
  symlink/realpath, text-only, and `maxFileBytes` boundary as bounded search/fetch.
+ The deterministic extractor surfaces explicit typed relationships; prose-style memory
+ that does not state relationships directly may legitimately produce few graph edges.
 - **Enhanced lifecycle scaffolding** (`injection.enabled`, `observations.enabled`,
  `recall.snapshotFirst`). The code paths are present: `session_start` writes a capped
  session snapshot from authorized `MEMORY.md`/`DREAMS.md` only when those files pass

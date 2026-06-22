@@ -157,6 +157,52 @@ describe("native memory citations core", () => {
     expect(firstText).not.toContain("/etc/default/grub");
   });
 
+  it("extracts corpus-style colon relationship records without path or status-word noise", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "corpus-style.md"),
+      [
+        "Project tooling: Mo prefers GitLab over GitHub. Current shared stack is ClickUp Free plus Mo Factory. The Codex user skill is installed at `/private/codex`.",
+        "Mo-Mac worker: MacBook Air node `Mo-Mac` is a subordinate worker under Ninja, reachable by Tailscale SSH at `node.example`.",
+        "Native Memory Citations: native OpenClaw plugin installed at `/private/native-memory-citations`; private GitHub repo `example/native-memory-citations`. Trusted publishing/OIDC was confirmed working.",
+        "Email local-model routing: Mo approved using Ninja's RTX 5060 Ti local models for drafts.",
+        "Candidate: Add Brave GUI to the generated plan.",
+        "06:14 MDT: Created a release note for ClawHub.",
+        "And invested in 114G.",
+        "Windows Ninja invested in up `/etc/default/grub` to `/etc/default/grub`.",
+      ].join("\n"),
+    );
+
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    const result = await extractMemoryGraph(config);
+    const graph = await readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
+    const edges = parseGraphJsonl(graph);
+
+    expect(result.edgeCount).toBeGreaterThanOrEqual(14);
+    expect(edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: "Email local-model routing", type: "mentions", to: "RTX 5060 Ti" }),
+      expect.objectContaining({ from: "Mo-Mac worker", type: "mentions", to: "MacBook Air" }),
+      expect.objectContaining({ from: "Mo-Mac worker", type: "mentions", to: "Ninja" }),
+      expect.objectContaining({ from: "Mo-Mac worker", type: "mentions", to: "Tailscale SSH" }),
+      expect.objectContaining({ from: "Native Memory Citations", type: "mentions", to: "GitHub" }),
+      expect.objectContaining({ from: "Native Memory Citations", type: "mentions", to: "OIDC" }),
+      expect.objectContaining({ from: "Native Memory Citations", type: "mentions", to: "OpenClaw" }),
+      expect.objectContaining({ from: "Project tooling", type: "mentions", to: "ClickUp Free" }),
+      expect.objectContaining({ from: "Project tooling", type: "mentions", to: "Codex" }),
+      expect.objectContaining({ from: "Project tooling", type: "mentions", to: "GitHub" }),
+      expect.objectContaining({ from: "Project tooling", type: "mentions", to: "GitLab" }),
+      expect.objectContaining({ from: "Project tooling", type: "mentions", to: "Mo Factory" }),
+    ]));
+    expect(graph).not.toContain("\"from\":\"Candidate\"");
+    expect(graph).not.toContain("\"from\":\"MDT\"");
+    expect(graph).not.toContain("\"to\":\"Add\"");
+    expect(graph).not.toContain("\"to\":\"Created\"");
+    expect(graph).not.toContain("\"from\":\"And\"");
+    expect(graph).not.toContain("114G");
+    expect(graph).not.toContain("/etc/default/grub");
+    expect(graph).not.toContain("/private/");
+  });
+
   it("extracts graph edges only from configured allowedRoots", async () => {
     const workspace = await fixtureWorkspace();
     await writeFile(path.join(workspace, "MEMORY.md"), "Private Person works at Private Graph Co.\n");

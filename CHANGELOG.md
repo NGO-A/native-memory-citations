@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.16
+
+- Changed: tune deterministic graph extraction against real memory-corpus phrasing
+  styles, especially colon-labeled operational notes such as installed/configured/
+  reachable/uses/registers relationships. The extractor remains zero-LLM and
+  deterministic, and the `2026.6.15` stopword, numeric-fragment, and path-target
+  noise guards remain in force.
+- Docs: clarify that the deterministic graph surfaces explicit typed
+  relationships; prose-style memory may legitimately yield few edges.
+
 ## 2026.6.15
 
 - Fixed: tighten deterministic graph extraction filtering so stopword subjects and
