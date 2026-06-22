@@ -9,6 +9,10 @@ on:
 jobs:
   build-validate-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        openclaw-version: ["2026.6.8", "2026.6.9"]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -21,6 +25,9 @@ jobs:
 
       - name: Install (locked)
         run: npm ci
+
+      - name: Install OpenClaw ${{ matrix.openclaw-version }}
+        run: npm install --no-save --no-package-lock openclaw@${{ matrix.openclaw-version }}
 
       - name: Build and check manifest is not stale
         run: npm run plugin:build:check
