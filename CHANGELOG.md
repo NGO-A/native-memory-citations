@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.15
+
+- Fixed: tighten deterministic graph extraction filtering so stopword subjects and
+  non-entity target spans such as numeric fragments or filesystem paths do not become
+  graph entities.
+
 ## 2026.6.14
 
 - Changed: improve deterministic graph extraction with stricter entity-boundary

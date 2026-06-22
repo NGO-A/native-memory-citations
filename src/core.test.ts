@@ -122,6 +122,8 @@ describe("native memory citations core", () => {
         "Project Alpha mentions (Citation Engine).",
         "Noise Person works at the.",
         "Number Person works at 12345.",
+        "And invested in 114G.",
+        "Windows Ninja invested in up `/etc/default/grub` to `/etc/default/grub`.",
         "An works at Go.",
         "Acme Corp works at Beta Labs.",
         "Acme Corporation works at Beta Labs.",
@@ -150,6 +152,9 @@ describe("native memory citations core", () => {
     expect(firstText).not.toContain("Native Memory Labs's");
     expect(firstText).not.toContain("\"to\":\"the\"");
     expect(firstText).not.toContain("12345");
+    expect(firstText).not.toContain("\"from\":\"And\"");
+    expect(firstText).not.toContain("114G");
+    expect(firstText).not.toContain("/etc/default/grub");
   });
 
   it("extracts graph edges only from configured allowedRoots", async () => {

@@ -763,7 +763,7 @@ function isGraphEntityNoise(label: string): boolean {
   if (label.length < 2 || /^\d+$/.test(label) || isPunctuationOnly(label)) {
     return true;
   }
-  if (GRAPH_ENTITY_STOPWORDS.has(key) && !/^[A-Z]/.test(label)) {
+  if (GRAPH_ENTITY_STOPWORDS.has(key) && !(key === "an" && label === "An")) {
     return true;
   }
   return false;
@@ -786,7 +786,7 @@ function cleanEntityToken(value: string): string {
 }
 
 function isEntityToken(value: string): boolean {
-  return /^[A-Z][\p{L}\p{N}@.+-]*$/u.test(value) || /^[A-Z0-9][A-Z0-9@.+-]{1,}$/u.test(value);
+  return /^[A-Z][\p{L}\p{N}@.+-]*$/u.test(value) || /^[A-Z][A-Z0-9@.+-]{1,}$/u.test(value);
 }
 
 function properNounChunks(value: string): string[] {
@@ -822,16 +822,17 @@ function properNounChunks(value: string): string[] {
   return chunks;
 }
 
-function entityCandidateFromSpan(value: string): EntityCandidate | null {
+function entityCandidateFromSpan(value: string, options: { requireProperChunk?: boolean } = {}): EntityCandidate | null {
   const direct = entityCandidateFromLabel(value);
-  if (direct && properNounChunks(direct.label).length === 1 && properNounChunks(direct.label)[0] === direct.label) {
+  const chunks = properNounChunks(direct?.label ?? value);
+  if (!options.requireProperChunk && direct && chunks.length === 1 && chunks[0] === direct.label) {
     return direct;
   }
   const candidates = properNounChunks(value)
     .map(entityCandidateFromLabel)
     .filter((candidate): candidate is EntityCandidate => Boolean(candidate))
     .sort((a, b) => b.label.split(/\s+/g).length - a.label.split(/\s+/g).length || compareText(a.label, b.label));
-  return candidates[0] ?? direct;
+  return candidates[0] ?? (options.requireProperChunk ? null : direct);
 }
 
 function createGraphEdgeAccumulator(): GraphEdgeAccumulator {
@@ -866,7 +867,7 @@ function addEdge(
   edge: Omit<GraphEdge, "extractedAt">,
 ): void {
   const from = entityCandidateFromSpan(edge.from);
-  const to = entityCandidateFromSpan(edge.to);
+  const to = entityCandidateFromSpan(edge.to, { requireProperChunk: true });
   if (!from || !to || from.key === to.key) {
     return;
   }
