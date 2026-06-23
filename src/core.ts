@@ -214,6 +214,7 @@ const MAX_SNIPPET_CHARS = 4000;
 const DEFAULT_FETCH_CHARS = 8000;
 const MAX_FETCH_CHARS = 20000;
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
+const MAX_REDACTION_LINE_CHARS = 8192;
 const SCAN_CONCURRENCY = 8;
 const HIGH_ENTROPY_TOKEN_MIN_LENGTH = 24;
 const HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR = 4;
@@ -368,6 +369,21 @@ async function realpathOrSelf(p: string): Promise<string> {
   return realpath(p).catch(() => p);
 }
 
+// A configured/default root must not resolve, via symlink, outside the workspace.
+// Fail closed instead of silently dropping a root, which could mask a bad config.
+async function realRootsWithinWorkspace(config: PluginConfig): Promise<string[]> {
+  const realWorkspace = await realpathOrSelf(workspaceFromConfig(config));
+  const realRoots = await Promise.all(allowedRoots(config).map(realpathOrSelf));
+  for (const realRoot of realRoots) {
+    if (!within(realRoot, [realWorkspace])) {
+      throw new Error(
+        "native-memory-citations: allowed memory root resolves via symlink outside the workspace",
+      );
+    }
+  }
+  return realRoots;
+}
+
 export async function toSafePath(config: PluginConfig, requested: string): Promise<string> {
   const workspace = workspaceFromConfig(config);
   const resolved = path.resolve(workspace, requested);
@@ -377,8 +393,8 @@ export async function toSafePath(config: PluginConfig, requested: string): Promi
     throw new Error(`Path is outside allowed memory roots: ${requested}`);
   }
 
+  const realRoots = await realRootsWithinWorkspace(config);
   const realTarget = await realpathOrSelf(resolved);
-  const realRoots = await Promise.all(roots.map(realpathOrSelf));
   if (!within(realTarget, realRoots)) {
     throw new Error(`Path resolves via symlink outside allowed memory roots: ${requested}`);
   }
@@ -440,6 +456,9 @@ function redactHighEntropyTokens(line: string): string {
 }
 
 function redactSingleLineSecrets(line: string): string {
+  if (line.length > MAX_REDACTION_LINE_CHARS) {
+    return "[REDACTED_OVERSIZED_LINE]";
+  }
   return redactHighEntropyTokens(line
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi, "Bearer [REDACTED]")
     .replace(/\b(?:sk-proj-|sk-)[A-Za-z0-9_-]{16,}\b/g, "[REDACTED_OPENAI_KEY]")
@@ -627,6 +646,7 @@ export async function authorizedMemoryFiles(
   options: { logger?: MemoryLogger; includeDerivedArtifacts?: boolean } = {},
 ): Promise<AuthorizedMemoryFile[]> {
   const fileSizeLimit = maxFileBytes(config);
+  await realRootsWithinWorkspace(config);
   const files = (await Promise.all(allowedRoots(config).map((root) => collectFiles(root, options.logger)))).flat();
   const authorized: AuthorizedMemoryFile[] = [];
   for (const file of files.sort()) {
@@ -715,7 +735,7 @@ async function searchMemoryInternal(
   }
   const limit = clampInt(options.limit, 8, 1, 50);
   const contextLines = clampInt(options.contextLines, 2, 0, 8);
-  const files = await authorizedMemoryFiles(config, { logger: options.logger, includeDerivedArtifacts: true });
+  const files = await authorizedMemoryFiles(config, { logger: options.logger });
 
   const hits: InternalSearchHit[] = [];
   for (let i = 0; i < files.length; i += SCAN_CONCURRENCY) {
@@ -1107,7 +1127,11 @@ async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {
       && typeof parsed.sourceLine === "number"
       && typeof parsed.extractedAt === "string"
     ) {
-      edges.push(parsed as GraphEdge);
+      edges.push({
+        ...(parsed as GraphEdge),
+        from: redactMemoryText(parsed.from),
+        to: redactMemoryText(parsed.to),
+      });
     }
   }
   return edges;
@@ -1150,8 +1174,17 @@ export async function extractMemoryGraph(
   );
   const file = graphPath(config);
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, `${edges.map((edge) => JSON.stringify(edge)).join("\n")}${edges.length ? "\n" : ""}`, "utf8");
-  return { enabled: true, mode, graphPath: target, edgeCount: edges.length };
+  const persistedEdges = edges.map((edge) => ({
+    ...edge,
+    from: redactMemoryText(edge.from),
+    to: redactMemoryText(edge.to),
+  }));
+  await writeFile(
+    file,
+    `${persistedEdges.map((edge) => JSON.stringify(edge)).join("\n")}${persistedEdges.length ? "\n" : ""}`,
+    "utf8",
+  );
+  return { enabled: true, mode, graphPath: target, edgeCount: persistedEdges.length };
 }
 
 export async function queryMemoryGraph(

@@ -1,10 +1,11 @@
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   answerFromMemory,
+  authorizedMemoryFiles,
   extractMemoryGraph,
   fetchMemorySource,
   queryMemoryGraph,
@@ -261,6 +262,69 @@ describe("native memory citations core", () => {
     }
   });
 
+  it("extractMemoryGraph redacts secret-shaped labels before persistence", async () => {
+    const workspace = await fixtureWorkspace();
+    const rawSecret = "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+    await writeFile(
+      path.join(workspace, "memory", "graph-secret.md"),
+      `${rawSecret} Secret Label: Native Memory Labs registered OpenClaw.\n`,
+    );
+
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    const result = await extractMemoryGraph(config);
+    const graph = await readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
+
+    expect(result.enabled).toBe(true);
+    expect(result.edgeCount).toBeGreaterThan(0);
+    expect(graph).not.toContain(rawSecret);
+    expect(graph).not.toContain("sk-proj-abcdefghijklmnopqrstuvwxyz");
+    expect(graph).toContain("OPENAI_API_KEY=[REDACTED]");
+  });
+
+  it("native_memory_graph does not return raw secret-shaped labels", async () => {
+    const workspace = await fixtureWorkspace();
+    const rawSecret = "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+    await writeFile(
+      path.join(workspace, "memory", "graph-secret-query.md"),
+      `${rawSecret} Secret Label: Native Memory Labs registered OpenClaw.\n`,
+    );
+
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    await extractMemoryGraph(config);
+    const result = await queryMemoryGraph("OpenClaw", { config });
+    const serialized = JSON.stringify(result);
+
+    expect(result.enabled).toBe(true);
+    expect(serialized).toContain("OPENAI_API_KEY=[REDACTED]");
+    expect(serialized).not.toContain(rawSecret);
+    expect(serialized).not.toContain("sk-proj-abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("readGraphEdges redacts labels from a pre-existing unredacted graph.jsonl", async () => {
+    const workspace = await fixtureWorkspace();
+    const rawSecret = "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+    await writeFile(
+      path.join(workspace, "memory", "graph.jsonl"),
+      `${JSON.stringify({
+        from: "Legacy Node",
+        type: "mentions",
+        to: rawSecret,
+        sourceFile: "memory/legacy.md",
+        sourceLine: 1,
+        extractedAt: "1970-01-01T00:00:00.000Z",
+      })}\n`,
+    );
+
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    const result = await queryMemoryGraph("Legacy Node", { config });
+    const serialized = JSON.stringify(result);
+
+    expect(result.enabled).toBe(true);
+    expect(serialized).toContain("OPENAI_API_KEY=[REDACTED]");
+    expect(serialized).not.toContain(rawSecret);
+    expect(serialized).not.toContain("sk-proj-abcdefghijklmnopqrstuvwxyz");
+  });
+
   it("hashes the complete searched file content", async () => {
     const workspace = await fixtureWorkspace();
     const text = ["hash target alpha", "hash target beta", "hash target gamma"].join("\n");
@@ -293,6 +357,78 @@ describe("native memory citations core", () => {
         /Invalid allowedRoots/,
       );
     }
+  });
+
+  it("toSafePath rejects a target under a root that symlinks outside the workspace", async () => {
+    const workspace = await fixtureWorkspace();
+    const external = await mkdtemp(path.join(tmpdir(), "native-memory-citations-external-"));
+    await writeFile(path.join(external, "outside.md"), "external escape token\n");
+    await rm(path.join(workspace, "memory"), { recursive: true, force: true });
+    await symlink(external, path.join(workspace, "memory"), "dir");
+
+    await expect(toSafePath({ workspace }, "memory/outside.md")).rejects.toThrow(
+      /allowed memory root resolves via symlink outside the workspace/,
+    );
+  });
+
+  it("authorizedMemoryFiles rejects an escaping symlinked root", async () => {
+    const workspace = await fixtureWorkspace();
+    const external = await mkdtemp(path.join(tmpdir(), "native-memory-citations-external-"));
+    await writeFile(path.join(external, "outside.md"), "external escape token\n");
+    await rm(path.join(workspace, "memory"), { recursive: true, force: true });
+    await symlink(external, path.join(workspace, "memory"), "dir");
+
+    await expect(authorizedMemoryFiles({ workspace })).rejects.toThrow(
+      /allowed memory root resolves via symlink outside the workspace/,
+    );
+    await expect(searchMemory("external escape token", { config: { workspace } })).rejects.toThrow(
+      /allowed memory root resolves via symlink outside the workspace/,
+    );
+    await expect(answerFromMemory("external escape token", { config: { workspace } })).rejects.toThrow(
+      /allowed memory root resolves via symlink outside the workspace/,
+    );
+  });
+
+  it("legitimate root symlinked within the workspace still resolves", async () => {
+    const workspace = await fixtureWorkspace();
+    const realMemory = path.join(workspace, "real-memory");
+    await mkdir(realMemory, { recursive: true });
+    await writeFile(path.join(realMemory, "inside.md"), "inside symlink root token\n");
+    await rm(path.join(workspace, "memory"), { recursive: true, force: true });
+    await symlink(realMemory, path.join(workspace, "memory"), "dir");
+
+    const safe = await toSafePath({ workspace }, "memory/inside.md");
+    expect(safe).toBe(path.join(workspace, "memory", "inside.md"));
+    const hits = await searchMemory("inside symlink root token", { config: { workspace } });
+    expect(hits.some((hit) => hit.path === "memory/inside.md")).toBe(true);
+  });
+
+  it("searchMemory excludes memory/graph.jsonl and memory/observations.jsonl", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "graph.jsonl"), "unique-sidecar-search-token\n");
+    await writeFile(path.join(workspace, "memory", "observations.jsonl"), "unique-observation-search-token\n");
+
+    const graphHits = await searchMemory("unique-sidecar-search-token", { config: { workspace } });
+    const observationHits = await searchMemory("unique-observation-search-token", { config: { workspace } });
+
+    expect(graphHits.some((hit) => hit.path === "memory/graph.jsonl")).toBe(false);
+    expect(observationHits.some((hit) => hit.path === "memory/observations.jsonl")).toBe(false);
+    expect(graphHits).toHaveLength(0);
+    expect(observationHits).toHaveLength(0);
+  });
+
+  it("answerFromMemory excludes derived sidecars", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "graph.jsonl"), "unique-sidecar-answer-token\n");
+    await writeFile(path.join(workspace, "memory", "observations.jsonl"), "unique-observation-answer-token\n");
+
+    const graphAnswer = await answerFromMemory("unique-sidecar-answer-token", { config: { workspace } });
+    const observationAnswer = await answerFromMemory("unique-observation-answer-token", { config: { workspace } });
+
+    expect(graphAnswer.known).toBe(false);
+    expect(observationAnswer.known).toBe(false);
+    expect(JSON.stringify(graphAnswer)).not.toContain("memory/graph.jsonl");
+    expect(JSON.stringify(observationAnswer)).not.toContain("memory/observations.jsonl");
   });
 
   it("caps very dense merged regions", async () => {
@@ -434,7 +570,7 @@ describe("native memory citations core", () => {
 
   it("clamps excessive and non-finite fetch maxChars", async () => {
     const workspace = await fixtureWorkspace();
-    await writeFile(path.join(workspace, "memory", "very-long.md"), `${"x".repeat(25000)}\n`);
+    await writeFile(path.join(workspace, "memory", "very-long.md"), `${Array.from({ length: 25 }, () => "x".repeat(1000)).join("\n")}\n`);
     const capped = await fetchMemorySource(
       { sourceId: "memory/very-long.md", maxChars: 999999 },
       { workspace },
@@ -701,6 +837,36 @@ describe("native memory citations core", () => {
     });
     expect(serialized).toContain("[REDACTED_HIGH_ENTROPY]");
     expectNoRawValue(serialized, rawToken);
+  });
+
+  it("fails closed on oversized lines before single-line secret redaction", async () => {
+    const workspace = await fixtureWorkspace();
+    const rawSecret = "OversizedSecretValue123456789";
+    const oversizedLine = `oversized-redaction-probe api_token=${rawSecret} ${"A".repeat(120_000)}`;
+    await writeFile(
+      path.join(workspace, "memory", "oversized-redaction.md"),
+      [
+        "normal neighbor before",
+        oversizedLine,
+        "normal neighbor after",
+      ].join("\n"),
+    );
+
+    const [hits, fetched, answer] = await Promise.all([
+      searchMemory("oversized-redaction-probe", { config: { workspace }, contextLines: 1 }),
+      fetchMemorySource({ sourceId: "memory/oversized-redaction.md" }, { workspace }),
+      answerFromMemory("oversized-redaction-probe", { config: { workspace } }),
+    ]);
+
+    for (const output of [JSON.stringify(hits), JSON.stringify(fetched), JSON.stringify(answer)]) {
+      expect(output).toContain("[REDACTED_OVERSIZED_LINE]");
+      expectNoRawValue(output, rawSecret);
+      expectNoRawValue(output, "A".repeat(2000));
+    }
+    expect(hits[0]?.snippet).toContain("normal neighbor before");
+    expect(hits[0]?.snippet).toContain("normal neighbor after");
+    expect(fetched.content).toContain("normal neighbor before");
+    expect(fetched.content).toContain("normal neighbor after");
   });
 
   it("keeps adversarial raw values out of every public output field", async () => {
