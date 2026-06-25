@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.17
+
+Security release. All users should upgrade.
+
+Remediates four security issues in local memory handling:
+- Access-boundary handling for symbolically linked memory roots (bounded/default mode).
+- Exclusion of derived sidecars from search and answer results.
+- Redaction of graph sidecar labels at rest and on read (enhanced mode).
+- Redaction performance on oversized lines (bounded/default mode).
+
+After upgrading, enhanced-mode users with graph.enabled should re-run
+native_memory_extract to refresh the graph sidecar.
+
+Affected versions and further detail are published in the project security advisory.
+
 ## 2026.6.16
 
 - Changed: tune deterministic graph extraction against real memory-corpus phrasing
