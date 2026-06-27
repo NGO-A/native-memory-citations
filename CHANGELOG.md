@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## 2026.6.18
+
+Packaging-only release. Removes the reserved `openclaw` npm keyword so ClawHub
+topic validation accepts the security release metadata. No functional changes
+from 2026.6.17.
+
 ## 2026.6.17
 
 Security release. All users should upgrade.

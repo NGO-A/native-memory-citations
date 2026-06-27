@@ -1,6 +1,6 @@
 {
   "name": "@ngo-a/native-memory-citations",
-  "version": "2026.6.17",
+  "version": "2026.6.18",
   "type": "module",
   "description": "Cited, access-bounded local-memory retrieval for OpenClaw: access boundary, redaction, citations, and opt-in enhanced memory sidecars.",
   "license": "MIT",
@@ -18,7 +18,6 @@
     "url": "https://github.com/NGO-A/native-memory-citations/issues"
   },
   "keywords": [
-    "openclaw",
     "openclaw-plugin",
     "memory",
     "citations",
