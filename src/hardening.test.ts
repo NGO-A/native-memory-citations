@@ -188,6 +188,16 @@ describe("query size bounding (matcher-count DoS)", () => {
     expect(elapsed).toBeLessThan(300);
   });
 
+  it("preserves selective tail terms when bounding oversized queries", async () => {
+    const workspace = await seedWorkspace({
+      "memory/tail.md": "The tailonlyzebramarker survives after pasted log noise.\n",
+    });
+    const junk = Array.from({ length: 4600 }, (_v, i) => `x${i % 10}`).join("");
+    const query = `${junk} tailonlyzebramarker`;
+    const hits = await searchMemory(query, { config: { workspace } });
+    expect(hits.some((hit) => hit.sourceId === "memory/tail.md")).toBe(true);
+  });
+
   it("leaves ordinary multi-term queries unchanged", async () => {
     const workspace = await seedWorkspace({
       "memory/note.md": [

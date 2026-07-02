@@ -594,7 +594,9 @@ async function collectFiles(root: string, logger?: MemoryLogger): Promise<string
 }
 
 function terms(query: string): string[] {
-  const bounded = query.length > MAX_QUERY_CHARS ? query.slice(0, MAX_QUERY_CHARS) : query;
+  const bounded = query.length > MAX_QUERY_CHARS
+    ? `${query.slice(0, MAX_QUERY_CHARS / 2)} ${query.slice(-(MAX_QUERY_CHARS / 2))}`
+    : query;
   const unique = Array.from(
     new Set(
       bounded
