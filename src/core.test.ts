@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +8,8 @@ import {
   authorizedMemoryFiles,
   extractMemoryGraph,
   fetchMemorySource,
+  fileCacheForTest,
+  cacheEnvelopeHealthState,
   queryMemoryGraph,
   searchMemory,
   searchMemoryDetailed,
@@ -1167,6 +1169,70 @@ describe("native memory citations core", () => {
     const freshHits = await searchMemory("fresh-cache-token", { config: { workspace } });
     expect(freshHits).toHaveLength(1);
     expect(freshHits[0]?.matchText).toContain("fresh-cache-token");
+  });
+
+  it("refreshes cached content after a same-size replacement with preserved mtime", async () => {
+    fileCacheForTest.reset();
+    const workspace = await fixtureWorkspace();
+    const file = path.join(workspace, "memory", "same-size.md");
+    await writeFile(file, "old-cache-token\n");
+    expect(await searchMemory("old-cache-token", { config: { workspace }, contextLines: 0 })).toHaveLength(1);
+    const before = await stat(file);
+    const replacement = path.join(workspace, "memory", "same-size-replacement.md");
+    await writeFile(replacement, "new-cache-token\n");
+    await utimes(replacement, before.atime, before.mtime);
+    await rename(replacement, file);
+
+    const fresh = await searchMemory("new-cache-token", { config: { workspace }, contextLines: 0 });
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]?.matchText).toContain("new-cache-token");
+  });
+
+  it("evicts file cache entries by byte budget in LRU order", async () => {
+    fileCacheForTest.reset();
+    fileCacheForTest.setBudget(2500);
+    const workspace = await fixtureWorkspace();
+    for (const name of ["a", "b", "c"]) {
+      await writeFile(path.join(workspace, `${name}.md`), `${name}-cache-marker ${"x".repeat(550)}\n`);
+    }
+    await searchMemory("a-cache-marker", { config: { workspace, allowedRoots: ["a.md"] } });
+    await searchMemory("b-cache-marker", { config: { workspace, allowedRoots: ["b.md"] } });
+    await searchMemory("a-cache-marker", { config: { workspace, allowedRoots: ["a.md"] } });
+    await searchMemory("c-cache-marker", { config: { workspace, allowedRoots: ["c.md"] } });
+    const before = fileCacheForTest.stats().diskLoads;
+    await searchMemory("a-cache-marker", { config: { workspace, allowedRoots: ["a.md"] } });
+    expect(fileCacheForTest.stats().diskLoads).toBe(before);
+    await searchMemory("b-cache-marker", { config: { workspace, allowedRoots: ["b.md"] } });
+    expect(fileCacheForTest.stats().diskLoads).toBe(before + 1);
+    fileCacheForTest.reset();
+  });
+
+  it("does not re-read a 513-file corpus on a second unchanged query", async () => {
+    fileCacheForTest.reset();
+    const workspace = await fixtureWorkspace();
+    await Promise.all(Array.from({ length: 513 }, (_value, index) =>
+      writeFile(path.join(workspace, "memory", `cliff-${index}.md`), `cliffmarker ${index}\n`)));
+    await searchMemory("cliffmarker", { config: { workspace }, limit: 1 });
+    const firstLoads = fileCacheForTest.stats().diskLoads;
+    await searchMemory("cliffmarker", { config: { workspace }, limit: 1 });
+    const secondLoads = fileCacheForTest.stats().diskLoads - firstLoads;
+    expect(firstLoads).toBeGreaterThanOrEqual(513);
+    expect(secondLoads).toBe(0);
+    fileCacheForTest.reset();
+  });
+
+  it("signals a scan that exceeds the cache byte budget", async () => {
+    fileCacheForTest.reset();
+    fileCacheForTest.setBudget(1024);
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "large-local.md"), `envelopemarker ${"x".repeat(700)}\n`);
+    const result = await searchMemoryDetailed("envelopemarker", {
+      config: { workspace, allowedRoots: ["large-local.md"] },
+    });
+    expect(result.degraded).toBe(true);
+    expect(result.degradedReason).toContain("1024-byte cache budget");
+    expect(cacheEnvelopeHealthState()).toMatchObject({ files: 1, budgetBytes: 1024 });
+    fileCacheForTest.reset();
   });
 
   it("caps search snippets and match lines", async () => {

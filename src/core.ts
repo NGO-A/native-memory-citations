@@ -104,6 +104,8 @@ export type SearchResult = {
   hits: SearchHit[];
   skippedFiles: number;
   capped?: boolean;
+  degraded?: boolean;
+  degradedReason?: string;
 };
 
 export type FetchResult = {
@@ -231,7 +233,7 @@ const GRAPH_ENTITY_STOPWORDS = new Set([
 const ANSWER_MIN_SCORE = 3;
 const ANSWER_MIN_TERM_RATIO = 0.5;
 const MAX_REGION_LINES = 25;
-const FILE_CACHE_MAX = 512;
+const DEFAULT_FILE_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
 const MAX_LINE_CHARS = 2000;
 const MAX_SNIPPET_CHARS = 4000;
 const DEFAULT_FETCH_CHARS = 8000;
@@ -311,7 +313,9 @@ const STOPWORDS = new Set([
 export type LoadedFile = {
   mtimeMs: number;
   size: number;
-  rawText: string;
+  ctimeMs: number;
+  ino: number;
+  cacheBytes: number;
   rawLines: string[];
   redactedLines: string[];
   sha256: string;
@@ -323,6 +327,10 @@ export type AuthorizedMemoryFile = {
 };
 type InternalSearchHit = SearchHit & { rawSnippet: string; rawMatchText: string };
 const fileCache = new Map<string, LoadedFile>();
+let fileCacheBytes = 0;
+let fileCacheBudgetBytes = DEFAULT_FILE_CACHE_BUDGET_BYTES;
+let fileDiskLoads = 0;
+let cacheEnvelopeFinding: { files: number; bytes: number } | undefined;
 type FileStatTuple = Pick<Awaited<ReturnType<typeof stat>>, "mtimeMs" | "size" | "ctimeMs" | "ino">;
 type GraphCacheEntry = FileStatTuple & { edges: GraphEdge[]; skippedLines: number };
 const graphCache = new Map<string, GraphCacheEntry>();
@@ -722,7 +730,15 @@ function scoreLine(line: string, matchers: Matcher[]): number {
   return score;
 }
 
-type ScanDiagnostics = { skippedFiles: number };
+type ScanDiagnostics = { skippedFiles: number; scannedCacheBytes?: number };
+
+function deleteCachedFile(file: string): void {
+  const cached = fileCache.get(file);
+  if (cached) {
+    fileCacheBytes -= cached.cacheBytes;
+    fileCache.delete(file);
+  }
+}
 
 async function loadFile(
   file: string,
@@ -732,17 +748,23 @@ async function loadFile(
 ): Promise<LoadedFile | null> {
   const info = await stat(file).catch(() => null);
   if (!info || !info.isFile()) {
-    fileCache.delete(file);
+    deleteCachedFile(file);
     return null;
   }
   if (info.size > maxFileBytes) {
-    fileCache.delete(file);
+    deleteCachedFile(file);
     logger?.warn?.(`native-memory-citations: skipped oversized file: ${file}`);
     if (diagnostics) diagnostics.skippedFiles += 1;
     return null;
   }
   const cached = fileCache.get(file);
-  if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) {
+  if (
+    cached
+    && cached.mtimeMs === info.mtimeMs
+    && cached.size === info.size
+    && cached.ctimeMs === info.ctimeMs
+    && cached.ino === info.ino
+  ) {
     fileCache.delete(file);
     fileCache.set(file, cached);
     return cached;
@@ -753,23 +775,37 @@ async function loadFile(
     return "";
   });
   if (!rawText.trim()) {
-    fileCache.delete(file);
+    deleteCachedFile(file);
     return null;
   }
+  fileDiskLoads += 1;
   const rawLines = rawText.split(/\r?\n/g);
+  const redactedLines = buildRedactedLines(rawLines);
+  const cacheBytes = Buffer.byteLength(rawLines.join("\n"), "utf8")
+    + Buffer.byteLength(redactedLines.join("\n"), "utf8");
   const loaded = {
     mtimeMs: info.mtimeMs,
     size: info.size,
-    rawText,
+    ctimeMs: info.ctimeMs,
+    ino: info.ino,
+    cacheBytes,
     rawLines,
-    redactedLines: buildRedactedLines(rawLines),
+    redactedLines,
     sha256: sha256Text(rawText),
   };
+  const replaced = fileCache.get(file);
+  if (replaced) {
+    fileCacheBytes -= replaced.cacheBytes;
+  }
   fileCache.set(file, loaded);
-  if (fileCache.size > FILE_CACHE_MAX) {
+  fileCacheBytes += loaded.cacheBytes;
+  while (fileCacheBytes > fileCacheBudgetBytes) {
     const oldest = fileCache.keys().next().value;
     if (oldest !== undefined) {
+      fileCacheBytes -= fileCache.get(oldest)?.cacheBytes ?? 0;
       fileCache.delete(oldest);
+    } else {
+      break;
     }
   }
   return loaded;
@@ -800,6 +836,13 @@ export async function authorizedMemoryFiles(
     }
     authorized.push({ absolutePath: file, sourceId, loaded });
   }
+  const scannedCacheBytes = authorized.reduce((sum, file) => sum + file.loaded.cacheBytes, 0);
+  if (options.diagnostics) {
+    options.diagnostics.scannedCacheBytes = scannedCacheBytes;
+  }
+  cacheEnvelopeFinding = scannedCacheBytes > fileCacheBudgetBytes
+    ? { files: authorized.length, bytes: scannedCacheBytes }
+    : undefined;
   return authorized;
 }
 
@@ -859,18 +902,18 @@ async function searchMemoryInternal(
     signal?: AbortSignal;
     logger?: MemoryLogger;
   } = {},
-): Promise<{ hits: InternalSearchHit[]; skippedFiles: number; capped: boolean }> {
+): Promise<{ hits: InternalSearchHit[]; skippedFiles: number; capped: boolean; degraded: boolean }> {
   const config = options.config ?? {};
   const querySignal = termsWithSignal(query);
   const queryTerms = querySignal.values;
   options.signal?.throwIfAborted();
   const matchers = buildMatchers(queryTerms);
   if (matchers.length === 0) {
-    return { hits: [], skippedFiles: 0, capped: querySignal.capped };
+    return { hits: [], skippedFiles: 0, capped: querySignal.capped, degraded: false };
   }
   const limit = clampInt(options.limit, 8, 1, 50);
   const contextLines = clampInt(options.contextLines, 2, 0, 8);
-  const diagnostics: ScanDiagnostics = { skippedFiles: 0 };
+  const diagnostics: ScanDiagnostics = { skippedFiles: 0, scannedCacheBytes: 0 };
   const files = await authorizedMemoryFiles(config, { logger: options.logger, diagnostics });
 
   const hits: InternalSearchHit[] = [];
@@ -934,6 +977,7 @@ async function searchMemoryInternal(
     hits: sortedHits,
     skippedFiles: diagnostics.skippedFiles,
     capped: querySignal.capped || allSortedHits.length > limit,
+    degraded: (diagnostics.scannedCacheBytes ?? 0) > fileCacheBudgetBytes,
   };
 }
 
@@ -946,8 +990,34 @@ export async function searchMemoryDetailed(
     hits: result.hits.map(publicHit),
     skippedFiles: result.skippedFiles,
     ...(result.capped ? { capped: true } : {}),
+    ...(result.degraded
+      ? {
+          degraded: true,
+          degradedReason: `authorized corpus exceeds the ${fileCacheBudgetBytes}-byte cache budget`,
+        }
+      : {}),
   };
 }
+
+export function cacheEnvelopeHealthState(): { files: number; bytes: number; budgetBytes: number } | undefined {
+  return cacheEnvelopeFinding ? { ...cacheEnvelopeFinding, budgetBytes: fileCacheBudgetBytes } : undefined;
+}
+
+export const fileCacheForTest = {
+  reset(): void {
+    fileCache.clear();
+    fileCacheBytes = 0;
+    fileCacheBudgetBytes = DEFAULT_FILE_CACHE_BUDGET_BYTES;
+    fileDiskLoads = 0;
+    cacheEnvelopeFinding = undefined;
+  },
+  setBudget(bytes: number): void {
+    fileCacheBudgetBytes = bytes;
+  },
+  stats(): { entries: number; bytes: number; diskLoads: number; budgetBytes: number } {
+    return { entries: fileCache.size, bytes: fileCacheBytes, diskLoads: fileDiskLoads, budgetBytes: fileCacheBudgetBytes };
+  },
+};
 
 export async function searchMemory(
   query: string,

@@ -86,7 +86,7 @@ async function buildSnapshot(config: PluginConfig, logger: PluginApiLike["logger
       logger?.debug?.(`native-memory-citations: skipped unauthorized snapshot source ${source}: ${String(error)}`);
       return null;
     });
-    const text = file?.loaded.rawText ?? "";
+    const text = file?.loaded.rawLines.join("\n") ?? "";
     if (text.trim()) {
       parts.push(`## ${source}\n${text.trim()}`);
     }

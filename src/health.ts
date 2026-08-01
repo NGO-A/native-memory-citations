@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { registerHealthCheck, type HealthFinding } from "openclaw/plugin-sdk/health";
 import {
   authorizedMemoryFiles,
+  cacheEnvelopeHealthState,
   graphEnabled,
   graphPath,
   memoryDreamingEnabled,
@@ -57,6 +58,26 @@ export function registerNativeMemoryHealthChecks(): void {
     return;
   }
   registered = true;
+
+  registerHealthCheck({
+    id: "native-memory-citations/cache-envelope",
+    kind: "plugin",
+    source: PLUGIN_ID,
+    description: "Authorized memory scans remain within the documented local cache envelope.",
+    async detect() {
+      const state = cacheEnvelopeHealthState();
+      if (!state) {
+        return [];
+      }
+      return [{
+        checkId: "native-memory-citations/cache-envelope",
+        severity: "warning",
+        message: `Authorized memory scan loaded ${state.files} files / ${state.bytes} bytes, exceeding the ${state.budgetBytes}-byte cache budget.`,
+        source: PLUGIN_ID,
+        fixHint: "Reduce the bounded local corpus to <=500 files / <=50 MB or review the scan-based scaling decision.",
+      }];
+    },
+  });
 
   registerHealthCheck({
     id: "native-memory-citations/registration-shape",
