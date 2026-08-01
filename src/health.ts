@@ -7,6 +7,7 @@ import {
   cacheEnvelopeHealthState,
   graphEnabled,
   graphPath,
+  hostNativeMemoryInjectionState,
   isSourceWithinAllowedRoots,
   memoryDreamingEnabled,
   modeFromConfig,
@@ -52,6 +53,35 @@ async function authorizedMemoryMtimes(config: PluginConfig): Promise<number[]> {
   return files
     .filter((file) => sourceIdForPath(config, file.absolutePath) !== "memory/graph.jsonl")
     .map((file) => file.loaded.mtimeMs);
+}
+
+export function hostInjectionOverlapFindings(cfg: unknown): HealthFinding[] {
+  const config = pluginConfigFromOpenClawConfig(cfg);
+  if (modeFromConfig(config) !== "enhanced" || config.injection?.enabled !== true) {
+    return [];
+  }
+  const state = hostNativeMemoryInjectionState(cfg);
+  if (state === "disabled") {
+    return [];
+  }
+  if (state === "unknown") {
+    return [{
+      checkId: "native-memory-citations/host-injection-overlap",
+      severity: "warning",
+      message: "Unable to determine whether OpenClaw host-native memory injection overlaps the plugin's redacted snapshot injection.",
+      source: PLUGIN_ID,
+      ocPath: "agents.defaults.contextInjection",
+      fixHint: "Review SECURITY.md and verify the host's context-injection policy; unknown host config shapes fail open and are never treated as disabled.",
+    }];
+  }
+  return [{
+    checkId: "native-memory-citations/host-injection-overlap",
+    severity: "warning",
+    message: "OpenClaw host-native injection can send raw memory content to model context and trajectory diagnostics outside plugin redaction.",
+    source: PLUGIN_ID,
+    ocPath: "agents.defaults.contextInjection",
+    fixHint: "See SECURITY.md. Use host controls or set agents.defaults.contextInjection to never and ensure no per-agent override re-enables it.",
+  }];
 }
 
 export function registerNativeMemoryHealthChecks(): void {
@@ -163,6 +193,16 @@ export function registerNativeMemoryHealthChecks(): void {
         ocPath: "plugins.entries.memory-core.config.dreaming.enabled",
         fixHint: "Set plugins.entries.memory-core.config.dreaming.enabled to true yourself, or switch native-memory-citations back to mode: bounded.",
       }];
+    },
+  });
+
+  registerHealthCheck({
+    id: "native-memory-citations/host-injection-overlap",
+    kind: "plugin",
+    source: PLUGIN_ID,
+    description: "Enhanced snapshot injection does not silently overlap OpenClaw host-native raw memory injection.",
+    async detect(ctx) {
+      return hostInjectionOverlapFindings(ctx.cfg);
     },
   });
 
