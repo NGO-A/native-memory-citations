@@ -166,12 +166,26 @@ identity files, and tool references must be handled within clear boundaries.
 - `native_memory_fetch` - fetch a cited source by `sourceId` or a safe path, optionally checking an expected citation hash.
 - `native_memory_answer` - build an extractive answer from cited snippets, and state plainly when no cited memory is found.
 
+### Output signals
+
+Output bounds never reduce a tool result silently:
+
+- `native_memory_search` details are `{ hits, skippedFiles, capped?, degraded?, degradedReason? }`.
+  Each hit can include `truncated: true` when its snippet or match line was cut.
+- `native_memory_fetch` can include `truncated: true`; an out-of-range `lineStart`
+  throws an error that includes the actual file line count.
+- `native_memory_graph` can include `skippedLines` when corrupt derived records were
+  ignored. Traversed edges retain stored `from`/`to` and include `direction`.
+- `native_memory_extract` can include `capped: true` and `cappedLines` when oversized
+  source lines were excluded from deterministic extraction.
+
 ## Default scope
 
 By default the plugin searches:
 
 - `memory/`
 - `MEMORY.md`
+- `DREAMS.md`
 - `USER.md`
 - `IDENTITY.md`
 - `TOOLS.md`
@@ -203,7 +217,7 @@ All keys are optional.
 ### Default search scope
 
 The default roots are listed in Default scope above: `memory/`, `MEMORY.md`,
-`USER.md`, `IDENTITY.md`, and `TOOLS.md`. With `sharedMode: true`, `MEMORY.md` is
+`DREAMS.md`, `USER.md`, `IDENTITY.md`, and `TOOLS.md`. With `sharedMode: true`, `MEMORY.md` is
 excluded.
 
 ### Defining custom roots
@@ -255,7 +269,11 @@ Permitting larger files (4 MiB) and specifying a non-default workspace:
 - `sharedMode` has no effect once `allowedRoots` is set; the explicit list takes
  precedence.
 - Files exceeding `maxFileBytes` are skipped and logged rather than reported as
- errors. Set the limit to accommodate the largest memory files in use.
+ errors. Search tool output increments `skippedFiles`. Set the limit to accommodate
+ the largest memory files in use.
+- Scan-based retrieval is designed for a local corpus of at most 500 files / 50 MB.
+ The cache budget is 64 MiB; larger authorized scans set `degraded` and produce a
+ health finding instead of silently falling into repeated full-corpus work.
 - Hidden directories, `..` segments, and absolute paths cannot be included. This is
  enforced by the access boundary.
 
@@ -339,6 +357,8 @@ individually. Doing nothing leaves the plugin in bounded mode.
  symlink/realpath, text-only, and `maxFileBytes` boundary as bounded search/fetch.
  The deterministic extractor surfaces explicit typed relationships; prose-style memory
  that does not state relationships directly may legitimately produce few graph edges.
+ The persisted `extractedAt` field is the Unix epoch by design for deterministic
+ rebuilds; it is not provenance or the wall-clock extraction time.
 - **Enhanced lifecycle scaffolding** (`injection.enabled`, `observations.enabled`,
  `recall.snapshotFirst`). The code paths are present: `session_start` writes a capped
  session snapshot from authorized `MEMORY.md`/`DREAMS.md` only when those files pass

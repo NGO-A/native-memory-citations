@@ -150,7 +150,7 @@ type GraphEdgeAccumulator = {
   order: number;
 };
 
-const DEFAULT_PRIVATE_ROOTS = ["memory", "MEMORY.md", "USER.md", "IDENTITY.md", "TOOLS.md"];
+const DEFAULT_PRIVATE_ROOTS = ["memory", "MEMORY.md", "DREAMS.md", "USER.md", "IDENTITY.md", "TOOLS.md"];
 const DEFAULT_SHARED_ROOTS = ["memory", "USER.md", "IDENTITY.md", "TOOLS.md"];
 const TEXT_EXTENSIONS = new Set([".md", ".txt", ".json", ".jsonl", ".yaml", ".yml"]);
 const GRAPH_ENTITY_STOPWORDS = new Set([
@@ -419,6 +419,11 @@ export function allowedRoots(config: PluginConfig = {}): string[] {
     }
     return path.resolve(workspace, trimmed);
   });
+}
+
+export function isSourceWithinAllowedRoots(config: PluginConfig, sourceId: string): boolean {
+  const target = path.resolve(workspaceFromConfig(config), sourceId);
+  return within(target, allowedRoots(config));
 }
 
 function within(target: string, roots: string[]): boolean {

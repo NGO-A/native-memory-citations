@@ -7,6 +7,7 @@ import {
   cacheEnvelopeHealthState,
   graphEnabled,
   graphPath,
+  isSourceWithinAllowedRoots,
   memoryDreamingEnabled,
   modeFromConfig,
   type OpenClawConfigLike,
@@ -58,6 +59,27 @@ export function registerNativeMemoryHealthChecks(): void {
     return;
   }
   registered = true;
+
+  registerHealthCheck({
+    id: "native-memory-citations/default-memory-scope",
+    kind: "plugin",
+    source: PLUGIN_ID,
+    description: "Explicit allowedRoots do not accidentally remove MEMORY.md from private recall.",
+    async detect(ctx) {
+      const config = pluginConfigFromOpenClawConfig(ctx.cfg);
+      if (!config.allowedRoots?.length || config.sharedMode || isSourceWithinAllowedRoots(config, "MEMORY.md")) {
+        return [];
+      }
+      return [{
+        checkId: "native-memory-citations/default-memory-scope",
+        severity: "warning",
+        message: "Explicit allowedRoots excludes MEMORY.md from the authorized memory scope.",
+        source: PLUGIN_ID,
+        ocPath: `plugins.entries.${PLUGIN_ID}.config.allowedRoots`,
+        fixHint: "Add MEMORY.md explicitly if private long-term memory should remain searchable; allowedRoots replaces the defaults.",
+      }];
+    },
+  });
 
   registerHealthCheck({
     id: "native-memory-citations/cache-envelope",

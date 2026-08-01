@@ -400,6 +400,21 @@ describe("plugin manifest contract", () => {
     expect(snapshot).not.toContain("allowed user token");
   });
 
+  it("includes DREAMS.md in the private default snapshot scope", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "DREAMS.md"), "default dream snapshot marker\n");
+    const handlers = registeredHookHandlers(workspace, {
+      mode: "enhanced",
+      injection: { enabled: true },
+    });
+    await handlers.get("session_start")?.({}, {});
+    const snapshot = await readFile(
+      path.join(workspace, "memory", ".native-memory-citations", "snapshot.json"),
+      "utf8",
+    );
+    expect(snapshot).toContain("default dream snapshot marker");
+  });
+
   it("honors sharedMode for enhanced snapshots", async () => {
     const workspace = await fixtureWorkspace();
     await writeFile(path.join(workspace, "MEMORY.md"), "private shared-mode snapshot token\n");

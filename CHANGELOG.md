@@ -1,10 +1,51 @@
 # Changelog
 
 All notable changes to this project are documented here. The format is based on
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
-adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project uses
+calendar versioning (`YEAR.MONTH.MICRO`); version numbers do not signal breakage,
+so compatibility changes are called out explicitly here.
 
 ## [Unreleased]
+
+### Changed
+
+- **Compatibility:** graph traversal path edges preserve their stored `from`/`to`
+  orientation and now include `direction: "forward" | "reverse"`. Consumers that
+  interpreted reverse traversal as a newly asserted inverted edge must update.
+- **Compatibility:** `native_memory_fetch` now rejects an out-of-range `lineStart`
+  and reports the actual file line count instead of silently returning the last line.
+- **Compatibility:** the `native_memory_search` tool details are now an envelope
+  `{ hits, skippedFiles, capped?, degraded?, degradedReason? }` so every skipped or
+  bounded result has a machine-readable signal. The exported `searchMemory()` core
+  helper remains an array-returning compatibility API.
+- **Redaction:** entropy detection now handles 32+ character hex values and
+  slash-bearing secret alphabets and recognizes `passwd`, `pwd`, `credential`,
+  `auth`, and private-key assignments. Full hashes/checksums may now be redacted;
+  this deliberate over-redaction follows the fail-safe policy.
+- **Default scope:** `DREAMS.md` is now in the private default roots and becomes
+  snapshot-eligible by default when enhanced snapshot generation is enabled.
+- Bounded mode now drops and warns on unrecognized SDK tool registration shapes
+  instead of passing them through.
+- File caching uses a 64 MiB true LRU with mtime/size/ctime/inode validity. The
+  documented scan envelope is at most 500 files / 50 MB; larger scans are signaled.
+
+### Security
+
+- Sidecar writes validate the real parent inside the workspace before creating
+  directories, use temporary-file replacement, and fail closed on symlink escapes.
+- Graph and snapshot sidecars are versioned. Legacy graph files remain readable;
+  corrupt graph lines are skipped with `skippedLines`, corrupt snapshots degrade to
+  no snapshot with a warning, and unknown future formats are refused cleanly.
+- Enhanced snapshots redact complete source text before applying the token cap, so
+  truncation cannot shorten a secret below the redaction recognition threshold.
+
+### CI
+
+- GitHub Actions are pinned by immutable commit SHA and the publish path no longer
+  installs `npm@latest`.
+- CI covers Ubuntu, macOS, and Windows on Node 22.19.0 and 24.x, typechecks tests,
+  measures branch coverage with a baseline floor, injects filesystem failures, and
+  installs the packed tarball in a scratch smoke project.
 
 ## 2026.6.18
 
