@@ -55,6 +55,7 @@
     "test": "vitest run --dir src --no-file-parallelism",
     "test:typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test:coverage": "vitest run --dir src --no-file-parallelism --coverage",
+    "test:pack": "node scripts/tarball-smoke.mjs",
     "test:stress": "vitest run src/bounded-invariants.test.ts src/stress-soak.test.ts --no-file-parallelism"
   },
   "devDependencies": {

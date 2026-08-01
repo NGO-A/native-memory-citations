@@ -8,6 +8,8 @@ type FormatHeader = {
   version: number;
 };
 
+let temporarySequence = 0;
+
 function isHeader(value: unknown): value is FormatHeader {
   return Boolean(
     value
@@ -19,17 +21,32 @@ function isHeader(value: unknown): value is FormatHeader {
 
 export async function atomicWriteText(file: string, content: string): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+  temporarySequence += 1;
+  const temporary = `${file}.${process.pid}.${Date.now()}.${temporarySequence}.tmp`;
+  const backup = `${temporary}.previous`;
+  let movedOriginal = false;
   try {
     await writeFile(temporary, content, "utf8");
     if (process.platform === "win32") {
-      await unlink(file).catch((error: NodeJS.ErrnoException) => {
+      await rename(file, backup).then(() => {
+        movedOriginal = true;
+      }).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "ENOENT") {
           throw error;
         }
       });
     }
-    await rename(temporary, file);
+    try {
+      await rename(temporary, file);
+    } catch (error) {
+      if (movedOriginal) {
+        await rename(backup, file).catch(() => undefined);
+      }
+      throw error;
+    }
+    if (movedOriginal) {
+      await unlink(backup).catch(() => undefined);
+    }
   } catch (error) {
     await unlink(temporary).catch(() => undefined);
     throw error;

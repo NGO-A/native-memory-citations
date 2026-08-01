@@ -314,6 +314,24 @@ describe("native memory citations core", () => {
     expect(JSON.stringify(refreshed.paths)).toContain("Bob");
   });
 
+  it("supports parallel graph extracts and a query during replacement", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "parallel.md"), "Alice works at Acme.\n");
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    await extractMemoryGraph(config);
+    const [first, second, query] = await Promise.all([
+      extractMemoryGraph(config),
+      extractMemoryGraph(config),
+      queryMemoryGraph("Acme", { config }),
+    ]);
+    expect(first.edgeCount).toBe(1);
+    expect(second.edgeCount).toBe(1);
+    expect(query.paths.length).toBeGreaterThan(0);
+    const persisted = await readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
+    expect(persisted).toContain("native-memory-citations/graph");
+    expect(parseGraphJsonl(persisted)).toHaveLength(1);
+  });
+
   it("extractMemoryGraph redacts secret-shaped labels before persistence", async () => {
     const workspace = await fixtureWorkspace();
     const rawSecret = "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
@@ -1216,7 +1234,7 @@ describe("native memory citations core", () => {
     const firstLoads = fileCacheForTest.stats().diskLoads;
     await searchMemory("cliffmarker", { config: { workspace }, limit: 1 });
     const secondLoads = fileCacheForTest.stats().diskLoads - firstLoads;
-    expect(firstLoads).toBeGreaterThanOrEqual(513);
+    expect(firstLoads).toBe(515);
     expect(secondLoads).toBe(0);
     fileCacheForTest.reset();
   });
