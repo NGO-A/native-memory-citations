@@ -229,6 +229,8 @@ const MAX_GRAPH_LINE_CHARS = 4096;
 const SCAN_CONCURRENCY = 8;
 const HIGH_ENTROPY_TOKEN_MIN_LENGTH = 24;
 const HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR = 4;
+const HEX_TOKEN_MIN_LENGTH = 32;
+const HEX_TOKEN_MIN_BITS_PER_CHAR = 3.4;
 const DEFAULT_GRAPH_EDGE_TYPES: GraphEdgeType[] = ["works_at", "invested_in", "founded", "advises", "attended", "mentions"];
 const GRAPH_EXTRACTED_AT = "1970-01-01T00:00:00.000Z";
 const STOPWORDS = new Set([
@@ -458,11 +460,14 @@ function shannonEntropy(value: string): number {
 }
 
 function redactHighEntropyTokens(line: string): string {
-  return line.replace(/[A-Za-z0-9_+=-]{24,}/g, (token) => {
-    if (
-      token.length >= HIGH_ENTROPY_TOKEN_MIN_LENGTH
-      && shannonEntropy(token) >= HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR
-    ) {
+  return line.replace(/[A-Za-z0-9_+/=-]{24,}/g, (token) => {
+    if (/^\d+$/.test(token) || (token.match(/\//g)?.length ?? 0) >= 2) {
+      return token;
+    }
+    const isHex = /^[0-9a-f]+$/i.test(token);
+    const minimumLength = isHex ? HEX_TOKEN_MIN_LENGTH : HIGH_ENTROPY_TOKEN_MIN_LENGTH;
+    const minimumEntropy = isHex ? HEX_TOKEN_MIN_BITS_PER_CHAR : HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR;
+    if (token.length >= minimumLength && shannonEntropy(token) >= minimumEntropy) {
       return "[REDACTED_HIGH_ENTROPY]";
     }
     return token;
@@ -486,7 +491,7 @@ function redactSingleLineSecrets(line: string): string {
     .replace(/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_JWT]")
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):[^\s:@/]+@/gi, "$1:[REDACTED]@")
     .replace(
-      /\b([A-Za-z0-9_.-]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|CLIENT[_-]?SECRET)[A-Za-z0-9_.-]*\s*[:=]\s*)([^\s"'`]+|"[^"\n]+"|'[^'\n]+')/gi,
+      /\b([A-Za-z0-9_.-]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PWD|CREDENTIAL|AUTH|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET)[A-Za-z0-9_.-]*\s*[:=]\s*)([^\s"'`]+|"[^"\n]+"|'[^'\n]+')/gi,
       "$1[REDACTED]",
     ));
 }

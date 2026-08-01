@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -158,6 +159,50 @@ describe("redaction masking O(n) rewrite equivalence", () => {
     const elapsed = performance.now() - started;
     expect(out).toContain(PRIVATE_KEY_SENTINEL);
     expect(elapsed).toBeLessThan(400);
+  });
+});
+
+describe("charset-aware entropy redaction", () => {
+  const placements = (token: string): string[] => [
+    `${token} trailing prose`,
+    `leading prose ${token} trailing prose`,
+    `leading prose ${token}`,
+  ];
+
+  it.each([
+    ["hex-64", "0123456789abcdef".repeat(4)],
+    ["hex-40", "0123456789abcdef0123456789abcdef01234567"],
+    ["hex-32", "0123456789abcdef0123456789abcdef"],
+    ["base64-43", "QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OUFCQ0Q"],
+    ["aws-secret", "aB3dE5fG7hJ9kL2mN4pQ6rS8tV0xYz/1A2bC3dE4"],
+  ])("redacts %s candidates at every line position", (_name, token) => {
+    for (const line of placements(token)) {
+      expect(redactMemoryText(line)).not.toContain(token);
+      expect(redactMemoryText(line)).toContain("[REDACTED_HIGH_ENTROPY]");
+    }
+  });
+
+  it("redacts all 200 generated 64-character hex secrets", () => {
+    const corpus = Array.from({ length: 200 }, (_value, index) =>
+      createHash("sha256").update(`hex-secret-${index}`).digest("hex"));
+    const redacted = redactMemoryText(corpus.join("\n"));
+    expect(corpus.filter((secret) => !redacted.includes(secret))).toHaveLength(200);
+    expect(redacted.match(/\[REDACTED_HIGH_ENTROPY\]/g)).toHaveLength(200);
+  });
+
+  it.each(["passwd", "pwd", "credential", "auth", "private_key", "private-key"])(
+    "redacts %s keyname assignments",
+    (keyname) => {
+      expect(redactMemoryText(`${keyname}: ordinary-looking-secret-value`)).toBe(`${keyname}: [REDACTED]`);
+    },
+  );
+
+  it.each([
+    "1234567890123456789012345678901234567890",
+    "deadbeef1234",
+    "This is ordinary prose about a routine deployment and its status.",
+  ])("leaves non-secret candidate untouched: %s", (value) => {
+    expect(redactMemoryText(value)).toBe(value);
   });
 });
 
