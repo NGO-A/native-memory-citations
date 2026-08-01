@@ -91,7 +91,7 @@ async function buildSnapshot(config: PluginConfig, logger: PluginApiLike["logger
       parts.push(`## ${source}\n${text.trim()}`);
     }
   }
-  const content = redactMemoryText(approxTokenSlice(parts.join("\n\n"), tokenCap(config)));
+  const content = approxTokenSlice(redactMemoryText(parts.join("\n\n")), tokenCap(config));
   const file = await toSafeWritePath(config, sourceIdForPath(config, snapshotPath(config)));
   await writeVersionedJson(
     file,

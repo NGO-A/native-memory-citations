@@ -291,6 +291,28 @@ describe("plugin manifest contract", () => {
     expect(injected?.prependContext).not.toContain(secret);
   });
 
+  it("redacts a secret before slicing across the snapshot cap", async () => {
+    const workspace = await fixtureWorkspace();
+    const secret = "BoundarySecretValueABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+    const capChars = 1300 * 4;
+    const headingChars = "## MEMORY.md\n".length;
+    const filler = "x".repeat(capChars - headingChars - 10);
+    await writeFile(path.join(workspace, "MEMORY.md"), `${filler} ${secret}\n`);
+
+    await enhancedLifecycleForTest.buildSnapshot({
+      workspace,
+      mode: "enhanced",
+      injection: { enabled: true, tokenCap: 1300 },
+    }, undefined);
+    const snapshot = await readFile(
+      path.join(workspace, "memory", ".native-memory-citations", "snapshot.json"),
+      "utf8",
+    );
+    for (let length = 8; length <= secret.length; length += 1) {
+      expect(snapshot).not.toContain(secret.slice(0, length));
+    }
+  });
+
   it("ignores a corrupt enhanced snapshot and warns", async () => {
     const workspace = await fixtureWorkspace();
     const snapshotPath = path.join(workspace, "memory", ".native-memory-citations", "snapshot.json");
