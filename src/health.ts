@@ -2,7 +2,16 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerHealthCheck, type HealthFinding } from "openclaw/plugin-sdk/health";
-import { authorizedMemoryFiles, graphEnabled, modeFromConfig, sourceIdForPath, type PluginConfig, workspaceFromConfig } from "./core.js";
+import {
+  authorizedMemoryFiles,
+  graphEnabled,
+  graphPath,
+  memoryDreamingEnabled,
+  modeFromConfig,
+  type OpenClawConfigLike,
+  sourceIdForPath,
+  type PluginConfig,
+} from "./core.js";
 
 const PLUGIN_ID = "native-memory-citations";
 const EXPECTED_TOOLS = [
@@ -15,27 +24,8 @@ const EXPECTED_TOOLS = [
 
 let registered = false;
 
-type OpenClawLikeConfig = {
-  memory?: { dreaming?: { enabled?: boolean } };
-  plugins?: {
-    entries?: Record<string, unknown>;
-  };
-};
-
-function memoryDreamingEnabled(cfg: unknown): boolean {
-  const record = cfg as OpenClawLikeConfig;
-  if (record.memory?.dreaming?.enabled === true) {
-    return true;
-  }
-  const memoryCore = record.plugins?.entries?.["memory-core"];
-  if (memoryCore && typeof memoryCore === "object") {
-    return (memoryCore as { config?: { dreaming?: { enabled?: boolean } } }).config?.dreaming?.enabled === true;
-  }
-  return false;
-}
-
 function pluginConfigFromOpenClawConfig(cfg: unknown): PluginConfig {
-  const record = cfg as OpenClawLikeConfig;
+  const record = cfg as OpenClawConfigLike;
   const entry = record.plugins?.entries?.[PLUGIN_ID];
   if (entry && typeof entry === "object") {
     const maybeConfig = (entry as { config?: unknown }).config;
@@ -122,16 +112,15 @@ export function registerNativeMemoryHealthChecks(): void {
       if (!graphEnabled(config)) {
         return [];
       }
-      const workspace = workspaceFromConfig(config);
-      const graphPath = path.join(workspace, "memory", "graph.jsonl");
-      const graphInfo = await stat(graphPath).catch(() => null);
+      const file = graphPath(config);
+      const graphInfo = await stat(file).catch(() => null);
       if (!graphInfo?.isFile()) {
         return [{
           checkId: "native-memory-citations/graph-fresh",
           severity: "warning",
           message: "Enhanced graph mode is enabled but memory/graph.jsonl does not exist yet.",
           source: PLUGIN_ID,
-          path: graphPath,
+          path: file,
           fixHint: "Run native_memory_extract to build the graph sidecar.",
         }];
       }
@@ -144,7 +133,7 @@ export function registerNativeMemoryHealthChecks(): void {
           severity: "warning",
           message: "memory/graph.jsonl is older than at least one memory source file.",
           source: PLUGIN_ID,
-          path: graphPath,
+          path: file,
           fixHint: "Run native_memory_extract to refresh the graph sidecar.",
         });
       }

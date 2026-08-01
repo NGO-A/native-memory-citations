@@ -1,7 +1,8 @@
-import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { readJsonLines, writeJsonLines } from "./sidecar.js";
 
 export type PluginConfig = {
   workspace?: string;
@@ -38,6 +39,17 @@ export type PluginConfig = {
   };
 };
 
+export type OpenClawConfigLike = {
+  memory?: { dreaming?: { enabled?: boolean } };
+  plugins?: {
+    entries?: Record<string, {
+      config?: {
+        dreaming?: { enabled?: boolean };
+      };
+    } | unknown>;
+  };
+};
+
 export type GraphEdgeType = "works_at" | "invested_in" | "founded" | "advises" | "attended" | "mentions";
 
 export type GraphEdge = {
@@ -69,6 +81,7 @@ export type GraphQueryResult = {
   maxDepth: number;
   edgeCount: number;
   paths: GraphPath[];
+  skippedLines?: number;
   skipped?: string;
 };
 
@@ -301,7 +314,7 @@ export type AuthorizedMemoryFile = {
 type InternalSearchHit = SearchHit & { rawSnippet: string; rawMatchText: string };
 const fileCache = new Map<string, LoadedFile>();
 type FileStatTuple = Pick<Awaited<ReturnType<typeof stat>>, "mtimeMs" | "size" | "ctimeMs" | "ino">;
-type GraphCacheEntry = FileStatTuple & { edges: GraphEdge[] };
+type GraphCacheEntry = FileStatTuple & { edges: GraphEdge[]; skippedLines: number };
 const graphCache = new Map<string, GraphCacheEntry>();
 
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -344,8 +357,21 @@ export function graphEnabled(config: PluginConfig = {}): boolean {
   return isEnhancedMode(config) && config.graph?.enabled === true;
 }
 
-function graphPath(config: PluginConfig = {}): string {
+export function graphPath(config: PluginConfig = {}): string {
   return path.join(workspaceFromConfig(config), "memory", "graph.jsonl");
+}
+
+export function memoryDreamingEnabled(cfg: unknown): boolean {
+  const record = cfg as OpenClawConfigLike;
+  if (record.memory?.dreaming?.enabled === true) {
+    return true;
+  }
+  const memoryCore = record.plugins?.entries?.["memory-core"];
+  return Boolean(
+    memoryCore
+    && typeof memoryCore === "object"
+    && (memoryCore as { config?: { dreaming?: { enabled?: boolean } } }).config?.dreaming?.enabled === true,
+  );
 }
 
 function enabledGraphEdgeTypes(config: PluginConfig = {}): Set<GraphEdgeType> {
@@ -418,6 +444,35 @@ export async function toSafePath(config: PluginConfig, requested: string): Promi
   return resolved;
 }
 
+async function nearestExistingParent(target: string): Promise<string> {
+  let candidate = target;
+  while (true) {
+    try {
+      return await realpath(candidate);
+    } catch {
+      const parent = path.dirname(candidate);
+      if (parent === candidate) {
+        throw new Error(`native-memory-citations: cannot resolve write parent for ${target}`);
+      }
+      candidate = parent;
+    }
+  }
+}
+
+export async function toSafeWritePath(config: PluginConfig, requested: string): Promise<string> {
+  const workspace = workspaceFromConfig(config);
+  const target = path.resolve(workspace, requested);
+  if (!within(target, [workspace])) {
+    throw new Error(`Write path is outside the workspace: ${requested}`);
+  }
+  const realWorkspace = await realpathOrSelf(workspace);
+  const realParent = await nearestExistingParent(path.dirname(target));
+  if (!within(realParent, [realWorkspace])) {
+    throw new Error(`Write path resolves via symlink outside the workspace: ${requested}`);
+  }
+  return target;
+}
+
 export function sourceIdForPath(config: PluginConfig, absolutePath: string): string {
   return path.relative(workspaceFromConfig(config), absolutePath).split(path.sep).join("/");
 }
@@ -461,7 +516,7 @@ function shannonEntropy(value: string): number {
 
 function redactHighEntropyTokens(line: string): string {
   return line.replace(/[A-Za-z0-9_+/=-]{24,}/g, (token) => {
-    if (/^\d+$/.test(token) || (token.match(/\//g)?.length ?? 0) >= 2) {
+    if (/^\d+$/.test(token) || /^[a-z0-9._-]+(?:\/[a-z0-9._-]+){2,}$/.test(token)) {
       return token;
     }
     const isHex = /^[0-9a-f]+$/i.test(token);
@@ -1161,12 +1216,15 @@ function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: numb
   addCorpusMentionEdgesFromColonLine(cleaned, sourceFile, sourceLine, allowedTypes, accumulator);
 }
 
-async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {
+async function readGraphEdges(
+  config: PluginConfig,
+  logger?: MemoryLogger,
+): Promise<{ edges: GraphEdge[]; skippedLines: number }> {
   const file = graphPath(config);
   const info = await stat(file).catch(() => null);
   if (!info?.isFile()) {
     graphCache.delete(file);
-    return [];
+    return { edges: [], skippedLines: 0 };
   }
   const cached = graphCache.get(file);
   if (
@@ -1176,18 +1234,16 @@ async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {
     && cached.ctimeMs === info.ctimeMs
     && cached.ino === info.ino
   ) {
-    return cached.edges;
+    return { edges: cached.edges, skippedLines: cached.skippedLines };
   }
-  const text = await readFile(file, "utf8").catch(() => "");
-  if (!text.trim()) {
-    return [];
-  }
+  const sidecar = await readJsonLines<Partial<GraphEdge>>(
+    file,
+    "native-memory-citations/graph",
+    1,
+    { warn: (message) => logger?.warn?.(message) },
+  );
   const edges: GraphEdge[] = [];
-  for (const line of text.split(/\r?\n/g)) {
-    if (!line.trim()) {
-      continue;
-    }
-    const parsed = JSON.parse(line) as Partial<GraphEdge>;
+  for (const parsed of sidecar.entries) {
     if (
       typeof parsed.from === "string"
       && DEFAULT_GRAPH_EDGE_TYPES.includes(parsed.type as GraphEdgeType)
@@ -1209,8 +1265,9 @@ async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {
     ctimeMs: info.ctimeMs,
     ino: info.ino,
     edges,
+    skippedLines: sidecar.skippedLines,
   });
-  return edges;
+  return { edges, skippedLines: sidecar.skippedLines };
 }
 
 export async function extractMemoryGraph(
@@ -1248,17 +1305,17 @@ export async function extractMemoryGraph(
       || compareText(a.sourceFile, b.sourceFile)
       || a.sourceLine - b.sourceLine,
   );
-  const file = graphPath(config);
-  await mkdir(path.dirname(file), { recursive: true });
+  const file = await toSafeWritePath(config, sourceIdForPath(config, graphPath(config)));
   const persistedEdges = edges.map((edge) => ({
     ...edge,
     from: redactMemoryText(edge.from),
     to: redactMemoryText(edge.to),
   }));
-  await writeFile(
+  await writeJsonLines(
     file,
-    `${persistedEdges.map((edge) => JSON.stringify(edge)).join("\n")}${persistedEdges.length ? "\n" : ""}`,
-    "utf8",
+    "native-memory-citations/graph",
+    1,
+    persistedEdges,
   );
   graphCache.delete(file);
   return { enabled: true, mode, graphPath: target, edgeCount: persistedEdges.length };
@@ -1266,7 +1323,7 @@ export async function extractMemoryGraph(
 
 export async function queryMemoryGraph(
   query: string,
-  options: { maxDepth?: number; config?: PluginConfig } = {},
+  options: { maxDepth?: number; config?: PluginConfig; logger?: MemoryLogger } = {},
 ): Promise<GraphQueryResult> {
   const config = options.config ?? {};
   const mode = modeFromConfig(config);
@@ -1282,7 +1339,7 @@ export async function queryMemoryGraph(
       skipped: mode === "enhanced" ? "graph.enabled is false" : "mode is bounded",
     };
   }
-  const edges = await readGraphEdges(config);
+  const { edges, skippedLines } = await readGraphEdges(config, options.logger);
   const q = normalizeEntity(query).toLowerCase();
   const starts = new Set<string>();
   for (const edge of edges) {
@@ -1330,7 +1387,15 @@ export async function queryMemoryGraph(
       });
     }
   }
-  return { enabled: true, mode, query, maxDepth, edgeCount: edges.length, paths };
+  return {
+    enabled: true,
+    mode,
+    query,
+    maxDepth,
+    edgeCount: edges.length,
+    paths,
+    ...(skippedLines > 0 ? { skippedLines } : {}),
+  };
 }
 
 export async function fetchMemorySource(

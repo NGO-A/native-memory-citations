@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -279,12 +279,55 @@ describe("plugin manifest contract", () => {
 
     const snapshotPath = path.join(workspace, "memory", ".native-memory-citations", "snapshot.json");
     const snapshot = await readFile(snapshotPath, "utf8");
+    expect(JSON.parse(snapshot)).toMatchObject({
+      format: "native-memory-citations/snapshot",
+      version: 1,
+    });
     expect(snapshot).toContain("[REDACTED_OPENAI_KEY]");
     expect(snapshot).not.toContain(secret);
 
     const injected = await handlers.get("before_prompt_build")?.({}, {}) as { prependContext?: string } | undefined;
     expect(injected?.prependContext).toContain("[REDACTED_OPENAI_KEY]");
     expect(injected?.prependContext).not.toContain(secret);
+  });
+
+  it("ignores a corrupt enhanced snapshot and warns", async () => {
+    const workspace = await fixtureWorkspace();
+    const snapshotPath = path.join(workspace, "memory", ".native-memory-citations", "snapshot.json");
+    await mkdir(path.dirname(snapshotPath), { recursive: true });
+    await writeFile(snapshotPath, "{not valid json", "utf8");
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+    const warnings: string[] = [];
+    plugin.register({
+      pluginConfig: { workspace, mode: "enhanced", injection: { enabled: true } },
+      registerTool() {},
+      on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+        handlers.set(event, handler);
+      },
+      logger: { debug() {}, info() {}, warn(message: string) { warnings.push(message); }, error() {} },
+    } as never);
+
+    await expect(handlers.get("before_prompt_build")?.({}, {})).resolves.toBeUndefined();
+    expect(warnings.join("\n")).toContain("ignored corrupt enhanced snapshot");
+  });
+
+  it("refuses snapshot writes through a workspace-escaping memory symlink", async () => {
+    const workspace = await fixtureWorkspace();
+    const external = await mkdtemp(path.join(tmpdir(), "native-memory-citations-snapshot-external-"));
+    await mkdir(path.join(workspace, "notes"), { recursive: true });
+    await rm(path.join(workspace, "memory"), { recursive: true, force: true });
+    await symlink(external, path.join(workspace, "memory"), "dir");
+    const config = {
+      workspace,
+      mode: "enhanced" as const,
+      allowedRoots: ["notes"],
+      injection: { enabled: true },
+    };
+
+    await expect(enhancedLifecycleForTest.buildSnapshot(config, undefined)).rejects.toThrow(
+      /Write path resolves via symlink outside/,
+    );
+    await expect(readFile(path.join(external, ".native-memory-citations", "snapshot.json"), "utf8")).rejects.toThrow();
   });
 
   it("builds enhanced snapshots only from allowed memory roots", async () => {

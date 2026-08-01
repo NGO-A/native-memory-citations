@@ -1,6 +1,16 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { modeFromConfig, readAuthorizedMemoryFile, type PluginConfig, redactMemoryText, workspaceFromConfig } from "./core.js";
+import {
+  memoryDreamingEnabled,
+  modeFromConfig,
+  readAuthorizedMemoryFile,
+  type OpenClawConfigLike,
+  type PluginConfig,
+  redactMemoryText,
+  sourceIdForPath,
+  toSafeWritePath,
+  workspaceFromConfig,
+} from "./core.js";
+import { readVersionedJson, writeVersionedJson } from "./sidecar.js";
 
 const PLUGIN_ID = "native-memory-citations";
 const DEFAULT_TOKEN_CAP = 1300;
@@ -26,17 +36,6 @@ type PluginApiLike = {
     config?: {
       current?: () => unknown;
     };
-  };
-};
-
-type OpenClawConfigLike = {
-  memory?: { dreaming?: { enabled?: boolean } };
-  plugins?: {
-    entries?: Record<string, {
-      config?: {
-        dreaming?: { enabled?: boolean };
-      };
-    } | unknown>;
   };
 };
 
@@ -93,38 +92,37 @@ async function buildSnapshot(config: PluginConfig, logger: PluginApiLike["logger
     }
   }
   const content = redactMemoryText(approxTokenSlice(parts.join("\n\n"), tokenCap(config)));
-  await mkdir(snapshotDir(config), { recursive: true });
-  await writeFile(
-    snapshotPath(config),
-    `${JSON.stringify({
+  const file = await toSafeWritePath(config, sourceIdForPath(config, snapshotPath(config)));
+  await writeVersionedJson(
+    file,
+    "native-memory-citations/snapshot",
+    1,
+    {
       createdAt: new Date().toISOString(),
       tokenCap: tokenCap(config),
       content,
-    })}\n`,
-    "utf8",
+    },
   );
   logger?.debug?.(`native-memory-citations: refreshed enhanced snapshot (${content.length} chars)`);
 }
 
-async function readSnapshot(config: PluginConfig): Promise<string | undefined> {
-  const raw = await readFile(snapshotPath(config), "utf8").catch(() => "");
-  if (!raw.trim()) {
+async function readSnapshot(config: PluginConfig, logger?: PluginApiLike["logger"]): Promise<string | undefined> {
+  try {
+    const parsed = await readVersionedJson<{ content?: unknown }>(
+      snapshotPath(config),
+      "native-memory-citations/snapshot",
+      1,
+    );
+    return typeof parsed?.content === "string" && parsed.content.trim() ? parsed.content.trim() : undefined;
+  } catch (error) {
+    logger?.warn?.(`native-memory-citations: ignored corrupt enhanced snapshot: ${String(error)}`);
     return undefined;
   }
-  const parsed = JSON.parse(raw) as { content?: unknown };
-  return typeof parsed.content === "string" && parsed.content.trim() ? parsed.content.trim() : undefined;
 }
 
 function hostDreamingEnabled(api: PluginApiLike): boolean {
   const current = (typeof api.runtime?.config?.current === "function" ? api.runtime.config.current() : api.config) as OpenClawConfigLike | undefined;
-  if (current?.memory?.dreaming?.enabled === true) {
-    return true;
-  }
-  const memoryCore = current?.plugins?.entries?.["memory-core"];
-  if (memoryCore && typeof memoryCore === "object") {
-    return (memoryCore as { config?: { dreaming?: { enabled?: boolean } } }).config?.dreaming?.enabled === true;
-  }
-  return false;
+  return memoryDreamingEnabled(current);
 }
 
 function emitObservationUnavailable(api: PluginApiLike): void {
@@ -164,7 +162,7 @@ export function registerEnhancedLifecycle(api: PluginApiLike): void {
 
   if (config.injection?.enabled === true) {
     registerHook(api, "before_prompt_build", async () => {
-      const snapshot = await readSnapshot(config);
+      const snapshot = await readSnapshot(config, api.logger);
       if (!snapshot) {
         return;
       }

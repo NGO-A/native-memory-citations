@@ -60,7 +60,9 @@ function expectNoRawValue(serialized: string, rawValue: string): void {
 }
 
 function parseGraphJsonl(text: string): Array<Record<string, unknown>> {
-  return text.trim().split(/\r?\n/g).filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+  return text.trim().split(/\r?\n/g).filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((entry) => entry.format === undefined);
 }
 
 describe("native memory citations core", () => {
@@ -139,6 +141,10 @@ describe("native memory citations core", () => {
     const edges = parseGraphJsonl(firstText);
 
     expect(first.edgeCount).toBe(5);
+    expect(JSON.parse(firstText.split(/\r?\n/g)[0]!) as Record<string, unknown>).toEqual({
+      format: "native-memory-citations/graph",
+      version: 1,
+    });
     expect(second.edgeCount).toBe(first.edgeCount);
     expect(secondText).toBe(firstText);
     expect(edges).toEqual([
@@ -366,6 +372,58 @@ describe("native memory citations core", () => {
     expect(serialized).toContain("OPENAI_API_KEY=[REDACTED]");
     expect(serialized).not.toContain(rawSecret);
     expect(serialized).not.toContain("sk-proj-abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("skips corrupt graph lines and reports the count", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "graph.jsonl"),
+      [
+        JSON.stringify({ format: "native-memory-citations/graph", version: 1 }),
+        "{not valid json",
+        JSON.stringify({
+          from: "Alice",
+          type: "works_at",
+          to: "Acme",
+          sourceFile: "memory/source.md",
+          sourceLine: 1,
+          extractedAt: "1970-01-01T00:00:00.000Z",
+        }),
+      ].join("\n"),
+    );
+    const warnings: string[] = [];
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    const result = await queryMemoryGraph("Acme", { config, logger: { warn: (message) => warnings.push(message) } });
+    expect(result.edgeCount).toBe(1);
+    expect(result.skippedLines).toBe(1);
+    expect(warnings.join("\n")).toContain("skipped corrupt");
+  });
+
+  it("refuses graph sidecars from an unknown future version", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "graph.jsonl"),
+      `${JSON.stringify({ format: "native-memory-citations/graph", version: 2 })}\n`,
+    );
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    await expect(queryMemoryGraph("Acme", { config })).rejects.toThrow(/Unsupported .* version 2/);
+  });
+
+  it("refuses graph writes through a workspace-escaping memory symlink", async () => {
+    const workspace = await fixtureWorkspace();
+    const external = await mkdtemp(path.join(tmpdir(), "native-memory-citations-write-external-"));
+    await mkdir(path.join(workspace, "notes"), { recursive: true });
+    await writeFile(path.join(workspace, "notes", "graph.md"), "Alice works at Acme.\n");
+    await rm(path.join(workspace, "memory"), { recursive: true, force: true });
+    await symlink(external, path.join(workspace, "memory"), "dir");
+    const config = {
+      workspace,
+      mode: "enhanced" as const,
+      allowedRoots: ["notes"],
+      graph: { enabled: true },
+    };
+    await expect(extractMemoryGraph(config)).rejects.toThrow(/Write path resolves via symlink outside/);
+    await expect(readFile(path.join(external, "graph.jsonl"), "utf8")).rejects.toThrow();
   });
 
   it("hashes the complete searched file content", async () => {
