@@ -10,6 +10,7 @@ import {
   fetchMemorySource,
   queryMemoryGraph,
   searchMemory,
+  searchMemoryDetailed,
   toSafePath,
 } from "./core.js";
 
@@ -598,16 +599,12 @@ describe("native memory citations core", () => {
     expect(result.staleMessage).toBeUndefined();
   });
 
-  it("fetches by filePath and clamps ranges", async () => {
+  it("rejects an out-of-range fetch start with the actual line count", async () => {
     const workspace = await fixtureWorkspace();
-    const result = await fetchMemorySource(
+    await expect(fetchMemorySource(
       { filePath: "memory/2026-06-16.md", lineStart: 99, lineEnd: 2 },
       { workspace },
-    );
-    expect(result.lineStart).toBe(5);
-    expect(result.lineEnd).toBe(5);
-    expect(result.citation).toBe("memory/2026-06-16.md:5");
-    expect(result.content).toContain("native_memory_answer");
+    )).rejects.toThrow(/lineStart 99.*line count 5/);
   });
 
   it("normalizes non-finite fetch line ranges", async () => {
@@ -630,6 +627,7 @@ describe("native memory citations core", () => {
       { workspace },
     );
     expect(result.content).toHaveLength(256);
+    expect(result.truncated).toBe(true);
   });
 
   it("rejects hidden files and directories during fetch", async () => {
@@ -1146,6 +1144,10 @@ describe("native memory citations core", () => {
     });
     expect(hits).toHaveLength(0);
     expect(warnings.some((message) => message.includes("skipped oversized file"))).toBe(true);
+    const detailed = await searchMemoryDetailed("oversized-token", {
+      config: { workspace, maxFileBytes: 1024 },
+    });
+    expect(detailed.skippedFiles).toBe(1);
   });
 
   it("orders higher scoring files first", async () => {
@@ -1173,6 +1175,17 @@ describe("native memory citations core", () => {
     const hits = await searchMemory("longlinetoken", { config: { workspace }, contextLines: 0 });
     expect(hits[0]?.snippet.length).toBeLessThanOrEqual(4000);
     expect(hits[0]?.matchText.length).toBeLessThanOrEqual(2000);
+    expect(hits[0]?.truncated).toBe(true);
+  });
+
+  it("signals bounded query terms and result limits", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "cap-a.md"), "selectivecapmarker alpha\n");
+    await writeFile(path.join(workspace, "memory", "cap-b.md"), "selectivecapmarker beta\n");
+    const oversizedQuery = `${"q".repeat(5000)} selectivecapmarker`;
+    const result = await searchMemoryDetailed(oversizedQuery, { config: { workspace }, limit: 1 });
+    expect(result.capped).toBe(true);
+    expect(result.hits).toHaveLength(1);
   });
 
   it("honors an already-aborted search signal", async () => {

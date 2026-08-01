@@ -6,7 +6,7 @@ import {
   modeFromConfig,
   type PluginConfig,
   queryMemoryGraph,
-  searchMemory,
+  searchMemoryDetailed,
 } from "./core.js";
 import { registerEnhancedLifecycle } from "./enhanced.js";
 import { registerNativeMemoryHealthChecks } from "./health.js";
@@ -128,7 +128,7 @@ const plugin = defineToolPlugin({
           contextLines?: number;
         };
         context.signal?.throwIfAborted();
-        return searchMemory(query, {
+        return searchMemoryDetailed(query, {
           limit,
           contextLines,
           config: config as PluginConfig,
@@ -185,7 +185,7 @@ const plugin = defineToolPlugin({
       execute: async (input, config, context) => {
         const { query, maxDepth } = input as { query: string; maxDepth?: number };
         context.signal?.throwIfAborted();
-        return queryMemoryGraph(query, { maxDepth, config: config as PluginConfig });
+        return queryMemoryGraph(query, { maxDepth, config: config as PluginConfig, logger: context.api.logger });
       },
     }),
     tool({

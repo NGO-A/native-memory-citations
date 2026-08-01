@@ -66,6 +66,8 @@ export type GraphExtractResult = {
   mode: "bounded" | "enhanced";
   graphPath: string;
   edgeCount: number;
+  capped?: boolean;
+  cappedLines?: number;
   skipped?: string;
 };
 
@@ -95,6 +97,13 @@ export type SearchHit = {
   matchLine: number;
   matchText: string;
   sha256: string;
+  truncated?: boolean;
+};
+
+export type SearchResult = {
+  hits: SearchHit[];
+  skippedFiles: number;
+  capped?: boolean;
 };
 
 export type FetchResult = {
@@ -107,6 +116,7 @@ export type FetchResult = {
   sha256: string;
   stale?: boolean;
   staleMessage?: string;
+  truncated?: boolean;
 };
 
 export type AnswerResult = {
@@ -619,6 +629,7 @@ function publicHit(hit: InternalSearchHit): SearchHit {
     matchLine: hit.matchLine,
     matchText: hit.matchText,
     sha256: hit.sha256,
+    ...(hit.truncated ? { truncated: true } : {}),
   };
 }
 
@@ -656,7 +667,8 @@ async function collectFiles(root: string, logger?: MemoryLogger): Promise<string
   return files;
 }
 
-function terms(query: string): string[] {
+function termsWithSignal(query: string): { values: string[]; capped: boolean } {
+  let capped = query.length > MAX_QUERY_CHARS;
   const bounded = query.length > MAX_QUERY_CHARS
     ? `${query.slice(0, MAX_QUERY_CHARS / 2)} ${query.slice(-(MAX_QUERY_CHARS / 2))}`
     : query;
@@ -670,11 +682,16 @@ function terms(query: string): string[] {
     ),
   );
   if (unique.length <= MAX_QUERY_TERMS) {
-    return unique;
+    return { values: unique, capped };
   }
   // Pathological query: keep the most selective (longest) terms so the cap costs
   // the least recall. Only reached above the cap, so normal queries are untouched.
-  return [...unique].sort((a, b) => b.length - a.length).slice(0, MAX_QUERY_TERMS);
+  capped = true;
+  return { values: [...unique].sort((a, b) => b.length - a.length).slice(0, MAX_QUERY_TERMS), capped };
+}
+
+function terms(query: string): string[] {
+  return termsWithSignal(query).values;
 }
 
 function escapeRegExp(s: string): string {
@@ -705,7 +722,14 @@ function scoreLine(line: string, matchers: Matcher[]): number {
   return score;
 }
 
-async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogger): Promise<LoadedFile | null> {
+type ScanDiagnostics = { skippedFiles: number };
+
+async function loadFile(
+  file: string,
+  maxFileBytes: number,
+  logger?: MemoryLogger,
+  diagnostics?: ScanDiagnostics,
+): Promise<LoadedFile | null> {
   const info = await stat(file).catch(() => null);
   if (!info || !info.isFile()) {
     fileCache.delete(file);
@@ -714,6 +738,7 @@ async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogge
   if (info.size > maxFileBytes) {
     fileCache.delete(file);
     logger?.warn?.(`native-memory-citations: skipped oversized file: ${file}`);
+    if (diagnostics) diagnostics.skippedFiles += 1;
     return null;
   }
   const cached = fileCache.get(file);
@@ -722,7 +747,11 @@ async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogge
     fileCache.set(file, cached);
     return cached;
   }
-  const rawText = await readFile(file, "utf8").catch(() => "");
+  const rawText = await readFile(file, "utf8").catch((error) => {
+    logger?.debug?.(`native-memory-citations: skipped unreadable file ${file}: ${String(error)}`);
+    if (diagnostics) diagnostics.skippedFiles += 1;
+    return "";
+  });
   if (!rawText.trim()) {
     fileCache.delete(file);
     return null;
@@ -748,7 +777,7 @@ async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogge
 
 export async function authorizedMemoryFiles(
   config: PluginConfig = {},
-  options: { logger?: MemoryLogger; includeDerivedArtifacts?: boolean } = {},
+  options: { logger?: MemoryLogger; includeDerivedArtifacts?: boolean; diagnostics?: ScanDiagnostics } = {},
 ): Promise<AuthorizedMemoryFile[]> {
   const fileSizeLimit = maxFileBytes(config);
   await realRootsWithinWorkspace(config);
@@ -765,7 +794,7 @@ export async function authorizedMemoryFiles(
     if (!options.includeDerivedArtifacts && isDerivedMemoryArtifact(config, file)) {
       continue;
     }
-    const loaded = await loadFile(file, fileSizeLimit, options.logger);
+    const loaded = await loadFile(file, fileSizeLimit, options.logger, options.diagnostics);
     if (!loaded) {
       continue;
     }
@@ -830,17 +859,19 @@ async function searchMemoryInternal(
     signal?: AbortSignal;
     logger?: MemoryLogger;
   } = {},
-): Promise<InternalSearchHit[]> {
+): Promise<{ hits: InternalSearchHit[]; skippedFiles: number; capped: boolean }> {
   const config = options.config ?? {};
-  const queryTerms = terms(query);
+  const querySignal = termsWithSignal(query);
+  const queryTerms = querySignal.values;
   options.signal?.throwIfAborted();
   const matchers = buildMatchers(queryTerms);
   if (matchers.length === 0) {
-    return [];
+    return { hits: [], skippedFiles: 0, capped: querySignal.capped };
   }
   const limit = clampInt(options.limit, 8, 1, 50);
   const contextLines = clampInt(options.contextLines, 2, 0, 8);
-  const files = await authorizedMemoryFiles(config, { logger: options.logger });
+  const diagnostics: ScanDiagnostics = { skippedFiles: 0 };
+  const files = await authorizedMemoryFiles(config, { logger: options.logger, diagnostics });
 
   const hits: InternalSearchHit[] = [];
   for (let i = 0; i < files.length; i += SCAN_CONCURRENCY) {
@@ -865,12 +896,12 @@ async function searchMemoryInternal(
       }
       const sourceId = file.sourceId;
       return mergeRegions(matches, contextLines, rawLines.length).map((region) => {
-        const rawSnippet = rawLines.slice(region.start, region.end + 1).join("\n").slice(0, MAX_SNIPPET_CHARS).trim();
-        const redactedSnippet = redactedLines
+        const rawSnippetFull = rawLines.slice(region.start, region.end + 1).join("\n");
+        const redactedSnippetFull = redactedLines
           .slice(region.start, region.end + 1)
-          .join("\n")
-          .slice(0, MAX_SNIPPET_CHARS)
-          .trim();
+          .join("\n");
+        const rawSnippet = rawSnippetFull.slice(0, MAX_SNIPPET_CHARS).trim();
+        const redactedSnippet = redactedSnippetFull.slice(0, MAX_SNIPPET_CHARS).trim();
         const distinctTerms = matchedTermCount(rawSnippet, matchers);
         const rawMatchText = (rawLines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim();
         return {
@@ -883,6 +914,9 @@ async function searchMemoryInternal(
           matchLine: region.anchorIndex + 1,
           matchText: (redactedLines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim(),
           sha256,
+          ...(rawSnippetFull.length > MAX_SNIPPET_CHARS || redactedSnippetFull.length > MAX_SNIPPET_CHARS
+            ? { truncated: true }
+            : {}),
           rawSnippet,
           rawMatchText,
         } satisfies InternalSearchHit;
@@ -893,11 +927,26 @@ async function searchMemoryInternal(
     }
   }
 
-  const sortedHits = hits
-    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.lineStart - b.lineStart)
-    .slice(0, limit);
+  const allSortedHits = hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.lineStart - b.lineStart);
+  const sortedHits = allSortedHits.slice(0, limit);
   options.logger?.debug?.(`native-memory-citations: scanned ${files.length} files, returned ${sortedHits.length} hits`);
-  return sortedHits;
+  return {
+    hits: sortedHits,
+    skippedFiles: diagnostics.skippedFiles,
+    capped: querySignal.capped || allSortedHits.length > limit,
+  };
+}
+
+export async function searchMemoryDetailed(
+  query: string,
+  options: Parameters<typeof searchMemoryInternal>[1] = {},
+): Promise<SearchResult> {
+  const result = await searchMemoryInternal(query, options);
+  return {
+    hits: result.hits.map(publicHit),
+    skippedFiles: result.skippedFiles,
+    ...(result.capped ? { capped: true } : {}),
+  };
 }
 
 export async function searchMemory(
@@ -910,7 +959,7 @@ export async function searchMemory(
     logger?: MemoryLogger;
   } = {},
 ): Promise<SearchHit[]> {
-  return (await searchMemoryInternal(query, options)).map(publicHit);
+  return (await searchMemoryInternal(query, options)).hits.map(publicHit);
 }
 
 function compareText(a: string, b: string): number {
@@ -1289,10 +1338,14 @@ export async function extractMemoryGraph(
   const allowedTypes = enabledGraphEdgeTypes(config);
   const files = await authorizedMemoryFiles(config, { logger: options.logger });
   const accumulator = createGraphEdgeAccumulator();
+  let cappedLines = 0;
   for (const file of files) {
     const loaded = file.loaded;
     const sourceFile = file.sourceId;
     loaded.rawLines.forEach((line, index) => {
+      if (line.length > MAX_GRAPH_LINE_CHARS) {
+        cappedLines += 1;
+      }
       extractEdgesFromLine(line, sourceFile, index + 1, allowedTypes, accumulator);
     });
   }
@@ -1318,7 +1371,13 @@ export async function extractMemoryGraph(
     persistedEdges,
   );
   graphCache.delete(file);
-  return { enabled: true, mode, graphPath: target, edgeCount: persistedEdges.length };
+  return {
+    enabled: true,
+    mode,
+    graphPath: target,
+    edgeCount: persistedEdges.length,
+    ...(cappedLines > 0 ? { capped: true, cappedLines } : {}),
+  };
 }
 
 export async function queryMemoryGraph(
@@ -1434,10 +1493,17 @@ export async function fetchMemorySource(
     throw new Error(`Path is not a readable memory file: ${sourceId}`);
   }
   const { rawLines, redactedLines, sha256 } = loaded;
+  const requestedLineStart = Math.floor(input.lineStart ?? 1);
+  if (Number.isFinite(requestedLineStart) && requestedLineStart > rawLines.length) {
+    throw new Error(
+      `Requested lineStart ${requestedLineStart} exceeds ${sourceId} line count ${rawLines.length}`,
+    );
+  }
   const lineStart = clampInt(input.lineStart, 1, 1, rawLines.length);
   const lineEnd = clampInt(input.lineEnd, rawLines.length, lineStart, rawLines.length);
   const maxChars = clampInt(input.maxChars, DEFAULT_FETCH_CHARS, 256, MAX_FETCH_CHARS);
-  const content = redactedLines.slice(lineStart - 1, lineEnd).join("\n").slice(0, maxChars);
+  const fullContent = redactedLines.slice(lineStart - 1, lineEnd).join("\n");
+  const content = fullContent.slice(0, maxChars);
   const expectedSha256 = input.expectedSha256?.trim().toLowerCase();
   const stale = Boolean(expectedSha256 && expectedSha256 !== sha256);
   return {
@@ -1448,6 +1514,7 @@ export async function fetchMemorySource(
     citation: `${sourceId}:${lineStart}`,
     content,
     sha256,
+    ...(fullContent.length > maxChars ? { truncated: true } : {}),
     ...(stale
       ? {
           stale: true,
@@ -1490,7 +1557,7 @@ export async function answerFromMemory(
 ): Promise<AnswerResult> {
   const queryTerms = terms(query);
   const matchers = buildMatchers(queryTerms);
-  const hits = await searchMemoryInternal(query, {
+  const { hits } = await searchMemoryInternal(query, {
     limit: options.limit ?? 6,
     contextLines: 2,
     config: options.config,

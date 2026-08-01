@@ -271,8 +271,8 @@ describe("stress gate: boundary and redaction under load", () => {
   it("redacts planted secrets across concurrent search, fetch, and answer calls", async () => {
     const { workspace } = await seedStressWorkspace();
     const tools = registerTools(workspace, ENHANCED_CONFIG);
-    const search = await callTool<Array<{ sourceId: string }>>(tools, "native_memory_search", { query: "secretmarker" });
-    const sourceId = search[0]?.sourceId;
+    const search = await callTool<{ hits: Array<{ sourceId: string }> }>(tools, "native_memory_search", { query: "secretmarker" });
+    const sourceId = search.hits[0]?.sourceId;
     expect(sourceId).toBeTruthy();
 
     const outputs = await Promise.all(
@@ -303,8 +303,8 @@ describe("stress gate: bounded mode stays inert under load", () => {
     expect(toolNames).toEqual(["native_memory_answer", "native_memory_fetch", "native_memory_search"]);
 
     try {
-      const search = await callTool<Array<{ sourceId: string }>>(tools, "native_memory_search", { query: "term-1" });
-      const sourceId = search[0]?.sourceId;
+      const search = await callTool<{ hits: Array<{ sourceId: string }> }>(tools, "native_memory_search", { query: "term-1" });
+      const sourceId = search.hits[0]?.sourceId;
       expect(sourceId).toBeTruthy();
       const tasks = Array.from({ length: thresholds.boundedUnderStress.parallelCalls }, async (_, i) => {
         if (i % 3 === 0) {

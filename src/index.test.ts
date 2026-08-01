@@ -197,7 +197,10 @@ describe("plugin manifest contract", () => {
 
     const searchResult = await searchTool?.execute("call-search", { query: "harness neutral" });
     expect(searchResult).toMatchObject({
-      details: [expect.objectContaining({ sourceId: "MEMORY.md" })],
+      details: {
+        hits: [expect.objectContaining({ sourceId: "MEMORY.md" })],
+        skippedFiles: 0,
+      },
     });
     const fetchResult = await fetchTool?.execute("call-fetch", { sourceId: "MEMORY.md" });
     expect(fetchResult).toMatchObject({
@@ -421,7 +424,7 @@ describe("plugin manifest contract", () => {
     expect(searchTool).toBeTruthy();
     const result = await searchTool?.execute("call-1", { query: "native memory citation plugin" });
     expect(result).toMatchObject({
-      details: [],
+      details: { hits: [], skippedFiles: 0 },
     });
   });
 
