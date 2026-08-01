@@ -31,6 +31,9 @@ so compatibility changes are called out explicitly here.
 
 ### Security
 
+- Document that redaction covers plugin-controlled surfaces only, and add a
+  fail-loud warning plus health finding when enhanced snapshot injection overlaps
+  OpenClaw host-native raw memory injection.
 - Sidecar writes validate the real parent inside the workspace before creating
   directories, use temporary-file replacement, and fail closed on symlink escapes.
 - Graph and snapshot sidecars are versioned. Legacy graph files remain readable;
