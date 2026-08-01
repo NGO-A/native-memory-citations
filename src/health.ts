@@ -12,6 +12,7 @@ import {
   sourceIdForPath,
   type PluginConfig,
 } from "./core.js";
+import { droppedUnknownRegistrationCount } from "./registration-state.js";
 
 const PLUGIN_ID = "native-memory-citations";
 const EXPECTED_TOOLS = [
@@ -56,6 +57,26 @@ export function registerNativeMemoryHealthChecks(): void {
     return;
   }
   registered = true;
+
+  registerHealthCheck({
+    id: "native-memory-citations/registration-shape",
+    kind: "plugin",
+    source: PLUGIN_ID,
+    description: "Bounded mode rejects tool registration shapes it cannot positively identify.",
+    async detect() {
+      const dropped = droppedUnknownRegistrationCount();
+      if (dropped === 0) {
+        return [];
+      }
+      return [{
+        checkId: "native-memory-citations/registration-shape",
+        severity: "warning",
+        message: `Bounded mode dropped ${dropped} unrecognized tool registration shape(s).`,
+        source: PLUGIN_ID,
+        fixHint: "Update native-memory-citations for the current OpenClaw SDK registration shape before enabling new tools.",
+      }];
+    },
+  });
 
   registerHealthCheck({
     id: "native-memory-citations/manifest-tools",

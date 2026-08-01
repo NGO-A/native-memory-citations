@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { enhancedLifecycleForTest } from "./enhanced.js";
-import plugin from "./index.js";
+import plugin, { filteredRegistrationApi } from "./index.js";
+import { droppedUnknownRegistrationCount, resetRegistrationStateForTest } from "./registration-state.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const manifestPath = path.resolve(here, "..", "openclaw.plugin.json");
@@ -148,6 +149,31 @@ describe("plugin manifest contract", () => {
         "native_memory_search",
       ].sort(),
     );
+  });
+
+  it("drops unknown registration shapes in bounded mode and warns", () => {
+    resetRegistrationStateForTest();
+    const registered: unknown[] = [];
+    const warnings: string[] = [];
+    const api = {
+      registerTool(tool: unknown) { registered.push(tool); },
+      logger: { debug() {}, info() {}, warn(message: string) { warnings.push(message); }, error() {} },
+    };
+    const bounded = filteredRegistrationApi(api as never, true);
+    bounded.registerTool({ tool: { name: "future_tool" } } as never);
+
+    expect(registered).toHaveLength(0);
+    expect(warnings.join("\n")).toContain("dropped an unrecognized tool registration shape");
+    expect(droppedUnknownRegistrationCount()).toBe(1);
+  });
+
+  it("passes unknown registration shapes through in enhanced mode", () => {
+    const registered: unknown[] = [];
+    const api = { registerTool(tool: unknown) { registered.push(tool); } };
+    const enhanced = filteredRegistrationApi(api as never, false);
+    const futureShape = { tool: { name: "future_tool" } };
+    enhanced.registerTool(futureShape as never);
+    expect(registered).toEqual([futureShape]);
   });
 
   it("registers enhanced hooks only when enhanced pillars are enabled", async () => {
