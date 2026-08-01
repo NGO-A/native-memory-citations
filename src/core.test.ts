@@ -262,6 +262,49 @@ describe("native memory citations core", () => {
     }
   });
 
+  it("preserves stored edge orientation during reverse traversal", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "reverse-query.md"), "Alice works at Acme.\n");
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    await extractMemoryGraph(config);
+
+    const result = await queryMemoryGraph("Acme", { config, maxDepth: 1 });
+    const reverseEdge = result.paths
+      .flatMap((graphPath) => graphPath.edges)
+      .find((edge) => edge.direction === "reverse");
+
+    expect(reverseEdge).toMatchObject({
+      from: "Alice",
+      type: "works_at",
+      to: "Acme",
+      direction: "reverse",
+    });
+    expect(result.paths.flatMap((graphPath) => graphPath.edges)).not.toContainEqual(
+      expect.objectContaining({ from: "Acme", type: "works_at", to: "Alice" }),
+    );
+  });
+
+  it("invalidates the graph cache after the sidecar changes", async () => {
+    const workspace = await fixtureWorkspace();
+    const file = path.join(workspace, "memory", "graph.jsonl");
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    const edge = (from: string, to: string) => JSON.stringify({
+      from,
+      type: "works_at",
+      to,
+      sourceFile: "memory/source.md",
+      sourceLine: 1,
+      extractedAt: "1970-01-01T00:00:00.000Z",
+    });
+    await writeFile(file, `${edge("Alice", "Acme")}\n`);
+    expect((await queryMemoryGraph("Acme", { config })).edgeCount).toBe(1);
+
+    await writeFile(file, `${edge("Alice", "Acme")}\n${edge("Bob", "Beta")}\n`);
+    const refreshed = await queryMemoryGraph("Beta", { config });
+    expect(refreshed.edgeCount).toBe(2);
+    expect(JSON.stringify(refreshed.paths)).toContain("Bob");
+  });
+
   it("extractMemoryGraph redacts secret-shaped labels before persistence", async () => {
     const workspace = await fixtureWorkspace();
     const rawSecret = "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";

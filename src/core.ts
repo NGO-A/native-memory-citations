@@ -59,7 +59,7 @@ export type GraphExtractResult = {
 
 export type GraphPath = {
   nodes: string[];
-  edges: GraphEdge[];
+  edges: Array<GraphEdge & { direction: "forward" | "reverse" }>;
 };
 
 export type GraphQueryResult = {
@@ -298,6 +298,9 @@ export type AuthorizedMemoryFile = {
 };
 type InternalSearchHit = SearchHit & { rawSnippet: string; rawMatchText: string };
 const fileCache = new Map<string, LoadedFile>();
+type FileStatTuple = Pick<Awaited<ReturnType<typeof stat>>, "mtimeMs" | "size" | "ctimeMs" | "ino">;
+type GraphCacheEntry = FileStatTuple & { edges: GraphEdge[] };
+const graphCache = new Map<string, GraphCacheEntry>();
 
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
   const n = Math.floor(value ?? fallback);
@@ -1045,6 +1048,17 @@ const CORPUS_GRAPH_RELATION_RE =
   /\b(?:approved(?: using)?|available|configured|confirmed|contains|created|enabled|generates|has|installed|lives|mounted|passed|prefers|published|reachable|registered|registers|requires|routes|run|runs|stored|supports|use|uses|verified|under|via|plus)\b/giu;
 const CORPUS_GRAPH_CLASS_PHRASE_RE =
   /\b(?:(?:native|local|private|public|canonical|shared|subordinate|strong|big|cheap|safe|scriptable|configured)\s+)?[A-Z][\w@.+-]*(?:\s+[A-Z0-9][\w@.+-]*){0,5}\s+(?:access|address|addresses|artifact|benchmark|candidate|CLI|factory|hub|model|node|package|plan|plugin|project|repo|route|router|setup|skill|skills|stack|storage|tool|tools|voice|workspace|workflow|worker)\b/gu;
+const GRAPH_PROPER_NOUN = "([A-Z][\\w@.+-]*(?:\\s+[A-Z][\\w@.+-]*){0,5})";
+const GRAPH_AFTER_SOURCE = "\\s*[`\"'“”‘’)\\]}]*\\s+";
+const GRAPH_TARGET = "([^.;\\n]{2,120})";
+const GRAPH_EDGE_PATTERNS: ReadonlyArray<{ type: GraphEdgeType; re: RegExp }> = [
+  { type: "works_at", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:works|worked)\\s+(?:at|for)\\s+${GRAPH_TARGET}`) },
+  { type: "invested_in", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:invested in|backs|backed)\\s+${GRAPH_TARGET}`) },
+  { type: "founded", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:founded|co-founded)\\s+${GRAPH_TARGET}`) },
+  { type: "advises", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:advises|advised|mentors|mentor(?:ed)?)\\s+${GRAPH_TARGET}`) },
+  { type: "attended", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:attended|went to)\\s+${GRAPH_TARGET}`) },
+  { type: "mentions", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:mentions|mentioned|discusses|discussed)\\s+${GRAPH_TARGET}`) },
+];
 
 function graphColonParts(line: string): { subject: string; body: string } | null {
   const match = line.match(/^(.{2,90}?):\s+(.{4,})$/u);
@@ -1130,18 +1144,7 @@ function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: numb
   if (/^(?:Candidate|\d{1,2}:\d{2}\s+(?:MDT|UTC)):/u.test(cleaned)) {
     return;
   }
-  const properNoun = "([A-Z][\\w@.+-]*(?:\\s+[A-Z][\\w@.+-]*){0,5})";
-  const afterSource = "\\s*[`\"'“”‘’)\\]}]*\\s+";
-  const target = "([^.;\\n]{2,120})";
-  const patterns: Array<{ type: GraphEdgeType; re: RegExp }> = [
-    { type: "works_at", re: new RegExp(`${properNoun}${afterSource}(?:works|worked)\\s+(?:at|for)\\s+${target}`) },
-    { type: "invested_in", re: new RegExp(`${properNoun}${afterSource}(?:invested in|backs|backed)\\s+${target}`) },
-    { type: "founded", re: new RegExp(`${properNoun}${afterSource}(?:founded|co-founded)\\s+${target}`) },
-    { type: "advises", re: new RegExp(`${properNoun}${afterSource}(?:advises|advised|mentors|mentor(?:ed)?)\\s+${target}`) },
-    { type: "attended", re: new RegExp(`${properNoun}${afterSource}(?:attended|went to)\\s+${target}`) },
-    { type: "mentions", re: new RegExp(`${properNoun}${afterSource}(?:mentions|mentioned|discusses|discussed)\\s+${target}`) },
-  ];
-  for (const pattern of patterns) {
+  for (const pattern of GRAPH_EDGE_PATTERNS) {
     if (!allowedTypes.has(pattern.type)) {
       continue;
     }
@@ -1154,7 +1157,23 @@ function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: numb
 }
 
 async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {
-  const text = await readFile(graphPath(config), "utf8").catch(() => "");
+  const file = graphPath(config);
+  const info = await stat(file).catch(() => null);
+  if (!info?.isFile()) {
+    graphCache.delete(file);
+    return [];
+  }
+  const cached = graphCache.get(file);
+  if (
+    cached
+    && cached.mtimeMs === info.mtimeMs
+    && cached.size === info.size
+    && cached.ctimeMs === info.ctimeMs
+    && cached.ino === info.ino
+  ) {
+    return cached.edges;
+  }
+  const text = await readFile(file, "utf8").catch(() => "");
   if (!text.trim()) {
     return [];
   }
@@ -1179,6 +1198,13 @@ async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {
       });
     }
   }
+  graphCache.set(file, {
+    mtimeMs: info.mtimeMs,
+    size: info.size,
+    ctimeMs: info.ctimeMs,
+    ino: info.ino,
+    edges,
+  });
   return edges;
 }
 
@@ -1229,6 +1255,7 @@ export async function extractMemoryGraph(
     `${persistedEdges.map((edge) => JSON.stringify(edge)).join("\n")}${persistedEdges.length ? "\n" : ""}`,
     "utf8",
   );
+  graphCache.delete(file);
   return { enabled: true, mode, graphPath: target, edgeCount: persistedEdges.length };
 }
 
@@ -1259,17 +1286,24 @@ export async function queryMemoryGraph(
       starts.add(edge.to);
     }
   }
-  const adjacency = new Map<string, GraphEdge[]>();
+  type AdjacencyEntry = { edge: GraphEdge; direction: "forward" | "reverse"; next: string };
+  const adjacency = new Map<string, AdjacencyEntry[]>();
   for (const edge of edges) {
-    adjacency.set(edge.from, [...(adjacency.get(edge.from) ?? []), edge]);
-    adjacency.set(edge.to, [...(adjacency.get(edge.to) ?? []), { ...edge, from: edge.to, to: edge.from }]);
+    const forward = adjacency.get(edge.from) ?? [];
+    forward.push({ edge, direction: "forward", next: edge.to });
+    adjacency.set(edge.from, forward);
+    const reverse = adjacency.get(edge.to) ?? [];
+    reverse.push({ edge, direction: "reverse", next: edge.from });
+    adjacency.set(edge.to, reverse);
   }
 
   const paths: GraphPath[] = [];
   const queue: GraphPath[] = Array.from(starts).sort().map((node) => ({ nodes: [node], edges: [] }));
   const seenPaths = new Set<string>();
-  while (queue.length > 0 && paths.length < 50) {
-    const current = queue.shift()!;
+  let queueIndex = 0;
+  while (queueIndex < queue.length && paths.length < 50) {
+    const current = queue[queueIndex]!;
+    queueIndex += 1;
     if (current.edges.length > 0) {
       const key = current.nodes.join("\0");
       if (!seenPaths.has(key)) {
@@ -1281,11 +1315,14 @@ export async function queryMemoryGraph(
       continue;
     }
     const last = current.nodes[current.nodes.length - 1] ?? "";
-    for (const edge of adjacency.get(last) ?? []) {
-      if (current.nodes.includes(edge.to)) {
+    for (const entry of adjacency.get(last) ?? []) {
+      if (current.nodes.includes(entry.next)) {
         continue;
       }
-      queue.push({ nodes: [...current.nodes, edge.to], edges: [...current.edges, edge] });
+      queue.push({
+        nodes: [...current.nodes, entry.next],
+        edges: [...current.edges, { ...entry.edge, direction: entry.direction }],
+      });
     }
   }
   return { enabled: true, mode, query, maxDepth, edgeCount: edges.length, paths };
@@ -1412,7 +1449,8 @@ export async function answerFromMemory(
   }
 
   const points: string[] = [];
-  for (const hit of supportingHits.slice(0, 1)) {
+  const hit = supportingHits[0];
+  if (hit) {
     const sentences = extractSentences(hit.snippet, matchers);
     const text = hit.matchText || sentences[0] || hit.snippet.split(/\n+/g).find(Boolean) || "";
     if (text.trim()) {
