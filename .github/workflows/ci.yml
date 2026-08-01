@@ -27,6 +27,7 @@ jobs:
         run: npm ci
 
       - name: Install OpenClaw ${{ matrix.openclaw-version }}
+        # Keep last: this compatibility probe intentionally desynchronizes node_modules from package-lock.json.
         run: npm install --no-save --no-package-lock openclaw@${{ matrix.openclaw-version }}
 
       - name: Build and check manifest is not stale
@@ -38,5 +39,8 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Fail on stray whitespace/conflict markers
+      - name: Typecheck tests
+        run: npm run test:typecheck
+
+      - name: Check whitespace and conflict markers only
         run: git diff --check
