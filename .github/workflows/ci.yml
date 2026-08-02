@@ -12,7 +12,6 @@ permissions:
 jobs:
   build-validate-test:
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
