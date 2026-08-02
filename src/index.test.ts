@@ -295,6 +295,31 @@ describe("plugin manifest contract", () => {
     ]);
   });
 
+  it("warns and reports health when a per-agent override re-enables host injection", async () => {
+    const warnings: string[] = [];
+    const pluginConfig = { mode: "enhanced" as const, injection: { enabled: true } };
+    const hostConfig = {
+      agents: {
+        defaults: { contextInjection: "never" as const },
+        list: [{ contextInjection: "always" as const }],
+      },
+      plugins: { entries: { "native-memory-citations": { config: pluginConfig } } },
+    };
+
+    await enhancedLifecycleForTest.runHostInjectionOverlapGuard({
+      config: hostConfig,
+      logger: { warn(message: string) { warnings.push(message); } },
+    }, pluginConfig);
+
+    expect(warnings).toContain(enhancedLifecycleForTest.HOST_INJECTION_OVERLAP_NOTICE);
+    expect(hostInjectionOverlapFindings(hostConfig)).toEqual([
+      expect.objectContaining({
+        checkId: "native-memory-citations/host-injection-overlap",
+        severity: "warning",
+      }),
+    ]);
+  });
+
   it.each([
     {
       name: "host injection off",
