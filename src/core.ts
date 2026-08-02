@@ -437,8 +437,15 @@ async function realpathOrSelf(p: string): Promise<string> {
 // A configured/default root must not resolve, via symlink, outside the workspace.
 // Fail closed instead of silently dropping a root, which could mask a bad config.
 async function realRootsWithinWorkspace(config: PluginConfig): Promise<string[]> {
-  const realWorkspace = await realpathOrSelf(workspaceFromConfig(config));
-  const realRoots = await Promise.all(allowedRoots(config).map(realpathOrSelf));
+  const workspace = workspaceFromConfig(config);
+  const realWorkspace = await realpathOrSelf(workspace);
+  const realRoots = await Promise.all(allowedRoots(config).map((root) => {
+    // Rebase missing default roots (for example DREAMS.md) onto the canonical
+    // workspace path before resolving them. On macOS /var may canonicalize to
+    // /private/var, and Windows may canonicalize drive-letter casing.
+    const canonicalCandidate = path.resolve(realWorkspace, path.relative(workspace, root));
+    return realpathOrSelf(canonicalCandidate);
+  }));
   for (const realRoot of realRoots) {
     if (!within(realRoot, [realWorkspace])) {
       throw new Error(

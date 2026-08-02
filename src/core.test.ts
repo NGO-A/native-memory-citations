@@ -69,6 +69,22 @@ function parseGraphJsonl(text: string): Array<Record<string, unknown>> {
 }
 
 describe("native memory citations core", () => {
+  it("accepts missing default roots when the workspace path canonicalizes through a symlink", async () => {
+    const realWorkspace = await fixtureWorkspace();
+    const aliasParent = await mkdtemp(path.join(tmpdir(), "native-memory-citations-alias-"));
+    const workspaceAlias = path.join(aliasParent, "workspace");
+    await symlink(realWorkspace, workspaceAlias, process.platform === "win32" ? "junction" : "dir");
+
+    const hits = await searchMemory("native memory citation plugin", {
+      config: { workspace: workspaceAlias },
+      limit: 3,
+    });
+
+    expect(hits[0]?.path).toBe("memory/2026-06-16.md");
+    await rm(aliasParent, { recursive: true, force: true });
+    await rm(realWorkspace, { recursive: true, force: true });
+  });
+
   it("searches memory with line citations", async () => {
     const workspace = await fixtureWorkspace();
     const hits = await searchMemory("native memory citation plugin", { config: { workspace }, limit: 3 });
