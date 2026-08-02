@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { enhancedLifecycleForTest } from "./enhanced.js";
+import { hostInjectionOverlapFindings } from "./health.js";
 import plugin, { filteredRegistrationApi } from "./index.js";
 import { droppedUnknownRegistrationCount, resetRegistrationStateForTest } from "./registration-state.js";
 
@@ -268,6 +269,107 @@ describe("plugin manifest contract", () => {
     expect(approvalCalls).toBe(0);
     expect(mutationCalls).toBe(0);
     expect(warnings.join("\n")).toContain("plugins.entries.memory-core.config.dreaming.enabled");
+  });
+
+  it("warns and reports health when plugin injection overlaps host-native injection", async () => {
+    const warnings: string[] = [];
+    const pluginConfig = { mode: "enhanced" as const, injection: { enabled: true } };
+    const hostConfig = {
+      // OpenClaw defaults an omitted contextInjection policy to "always"; this
+      // matches the scratch gateway profile that reproduced E12.
+      agents: { defaults: {} },
+      plugins: { entries: { "native-memory-citations": { config: pluginConfig } } },
+    };
+    await enhancedLifecycleForTest.runHostInjectionOverlapGuard({
+      config: hostConfig,
+      logger: { warn(message: string) { warnings.push(message); } },
+    }, pluginConfig);
+
+    expect(warnings).toContain(enhancedLifecycleForTest.HOST_INJECTION_OVERLAP_NOTICE);
+    expect(hostInjectionOverlapFindings(hostConfig)).toEqual([
+      expect.objectContaining({
+        checkId: "native-memory-citations/host-injection-overlap",
+        ocPath: "agents.defaults.contextInjection",
+        severity: "warning",
+      }),
+    ]);
+  });
+
+  it("warns and reports health when a per-agent override re-enables host injection", async () => {
+    const warnings: string[] = [];
+    const pluginConfig = { mode: "enhanced" as const, injection: { enabled: true } };
+    const hostConfig = {
+      agents: {
+        defaults: { contextInjection: "never" as const },
+        list: [{ contextInjection: "always" as const }],
+      },
+      plugins: { entries: { "native-memory-citations": { config: pluginConfig } } },
+    };
+
+    await enhancedLifecycleForTest.runHostInjectionOverlapGuard({
+      config: hostConfig,
+      logger: { warn(message: string) { warnings.push(message); } },
+    }, pluginConfig);
+
+    expect(warnings).toContain(enhancedLifecycleForTest.HOST_INJECTION_OVERLAP_NOTICE);
+    expect(hostInjectionOverlapFindings(hostConfig)).toEqual([
+      expect.objectContaining({
+        checkId: "native-memory-citations/host-injection-overlap",
+        severity: "warning",
+      }),
+    ]);
+  });
+
+  it.each([
+    {
+      name: "host injection off",
+      pluginConfig: { mode: "enhanced" as const, injection: { enabled: true } },
+      hostPolicy: "never" as const,
+    },
+    {
+      name: "plugin injection off",
+      pluginConfig: { mode: "enhanced" as const, injection: { enabled: false } },
+      hostPolicy: "always" as const,
+    },
+    {
+      name: "bounded mode",
+      pluginConfig: { mode: "bounded" as const, injection: { enabled: true } },
+      hostPolicy: "always" as const,
+    },
+  ])("keeps the host-overlap guard silent when $name", async ({ pluginConfig, hostPolicy }) => {
+    const warnings: string[] = [];
+    const hostConfig = {
+      agents: { defaults: { contextInjection: hostPolicy } },
+      plugins: { entries: { "native-memory-citations": { config: pluginConfig } } },
+    };
+    await enhancedLifecycleForTest.runHostInjectionOverlapGuard({
+      config: hostConfig,
+      logger: { warn(message: string) { warnings.push(message); } },
+    }, pluginConfig);
+
+    expect(warnings).toEqual([]);
+    expect(hostInjectionOverlapFindings(hostConfig)).toEqual([]);
+  });
+
+  it("fails open with a warning when host context-injection config is unreadable", async () => {
+    const warnings: string[] = [];
+    const pluginConfig = { mode: "enhanced" as const, injection: { enabled: true } };
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+    plugin.register({
+      pluginConfig,
+      registerTool() {},
+      on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+        handlers.set(event, handler);
+      },
+      logger: { warn(message: string) { warnings.push(message); } },
+      runtime: { config: { current() { throw new Error("config unavailable"); } } },
+    } as never);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(warnings.join("\n")).toContain("host-injection overlap guard failed open");
+    expect(() => handlers.get("cron_changed")?.({}, {})).not.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(warnings.filter((message) => message.includes("host-injection overlap guard failed open"))).toHaveLength(2);
   });
 
   it("does not write raw observations when structured extraction is unavailable", async () => {

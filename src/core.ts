@@ -40,6 +40,14 @@ export type PluginConfig = {
 };
 
 export type OpenClawConfigLike = {
+  agents?: {
+    defaults?: {
+      contextInjection?: "always" | "continuation-skip" | "never";
+    };
+    list?: Array<{
+      contextInjection?: "always" | "continuation-skip" | "never";
+    }>;
+  };
   memory?: { dreaming?: { enabled?: boolean } };
   plugins?: {
     entries?: Record<string, {
@@ -390,6 +398,48 @@ export function memoryDreamingEnabled(cfg: unknown): boolean {
     && typeof memoryCore === "object"
     && (memoryCore as { config?: { dreaming?: { enabled?: boolean } } }).config?.dreaming?.enabled === true,
   );
+}
+
+export type HostNativeMemoryInjectionState = "enabled" | "disabled" | "unknown";
+
+export function hostNativeMemoryInjectionState(cfg: unknown): HostNativeMemoryInjectionState {
+  if (!cfg || typeof cfg !== "object") {
+    return "unknown";
+  }
+  const agents = (cfg as OpenClawConfigLike).agents;
+  if (agents !== undefined && (!agents || typeof agents !== "object" || Array.isArray(agents))) {
+    return "unknown";
+  }
+  const defaults = agents?.defaults;
+  if (defaults !== undefined && (!defaults || typeof defaults !== "object" || Array.isArray(defaults))) {
+    return "unknown";
+  }
+  const policy = defaults?.contextInjection;
+  if (policy !== undefined && !["always", "continuation-skip", "never"].includes(policy)) {
+    return "unknown";
+  }
+  const agentsList = agents?.list;
+  if (agentsList !== undefined && !Array.isArray(agentsList)) {
+    return "unknown";
+  }
+  if (policy !== "never") {
+    // OpenClaw defaults an omitted policy to "always". This key is versioned host
+    // behavior; unknown shapes must fail open as unreadable, never as disabled.
+    return "enabled";
+  }
+  for (const agent of agentsList ?? []) {
+    if (!agent || typeof agent !== "object" || Array.isArray(agent)) {
+      return "unknown";
+    }
+    const override = agent.contextInjection;
+    if (override !== undefined && !["always", "continuation-skip", "never"].includes(override)) {
+      return "unknown";
+    }
+    if (override === "always" || override === "continuation-skip") {
+      return "enabled";
+    }
+  }
+  return "disabled";
 }
 
 function enabledGraphEdgeTypes(config: PluginConfig = {}): Set<GraphEdgeType> {

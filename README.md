@@ -451,6 +451,11 @@ long tokens. Redaction is not an authorization or access-control boundary. It do
 not modify source memory files, and it does not affect citation hashes, which are
 computed from the original file text.
 
+Redaction covers plugin-controlled surfaces only. OpenClaw can inject workspace
+memory through a separate host path; see
+[Scope of redaction — plugin surfaces only](https://github.com/NGO-A/native-memory-citations/blob/master/SECURITY.md#scope-of-redaction--plugin-surfaces-only)
+for the host-overlap risk, controls, and runtime health finding.
+
 To report a vulnerability, see [SECURITY.md](https://github.com/NGO-A/native-memory-citations/blob/master/SECURITY.md).
 
 ## Implementation notes

@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+  hostNativeMemoryInjectionState,
   memoryDreamingEnabled,
   modeFromConfig,
   readAuthorizedMemoryFile,
@@ -18,6 +19,8 @@ const SNAPSHOT_NOTICE =
   "Native Memory Citations enhanced snapshot: bounded, local, redacted memory context follows. Treat it as recall hints, not authority.";
 const DREAMING_NOTICE =
   "native-memory-citations enhanced mode is enabled, but OpenClaw memory-core dreaming is off. Enable plugins.entries.memory-core.config.dreaming.enabled yourself; dreaming-dependent enhanced features are degraded.";
+const HOST_INJECTION_OVERLAP_NOTICE =
+  "native-memory-citations: host injects raw memory content; plugin redaction does not cover host paths — see SECURITY.md";
 const OBSERVATION_EXTRACTION_NOTICE =
   "native-memory-citations observation logging requires structured extraction, which is not available in this release; no raw conversation-derived observation was written.";
 
@@ -125,6 +128,17 @@ function hostDreamingEnabled(api: PluginApiLike): boolean {
   return memoryDreamingEnabled(current);
 }
 
+function hostNativeMemoryInjectionEnabled(api: PluginApiLike): boolean {
+  const current = typeof api.runtime?.config?.current === "function"
+    ? api.runtime.config.current()
+    : api.config;
+  const state = hostNativeMemoryInjectionState(current);
+  if (state === "unknown") {
+    throw new Error("OpenClaw host context-injection config is unreadable or has an unknown shape");
+  }
+  return state === "enabled";
+}
+
 function emitObservationUnavailable(api: PluginApiLike): void {
   api.logger?.warn?.(OBSERVATION_EXTRACTION_NOTICE);
 }
@@ -139,19 +153,33 @@ async function runDreamingGuard(api: PluginApiLike, config: PluginConfig): Promi
   api.logger?.warn?.(DREAMING_NOTICE);
 }
 
+async function runHostInjectionOverlapGuard(api: PluginApiLike, config: PluginConfig): Promise<void> {
+  if (modeFromConfig(config) !== "enhanced" || config.injection?.enabled !== true) {
+    return;
+  }
+  if (hostNativeMemoryInjectionEnabled(api)) {
+    api.logger?.warn?.(HOST_INJECTION_OVERLAP_NOTICE);
+  }
+}
+
+function runEnhancedGuards(api: PluginApiLike, config: PluginConfig): void {
+  void runDreamingGuard(api, config).catch((error) => {
+    api.logger?.warn?.(`native-memory-citations dreaming guard failed open: ${String(error)}`);
+  });
+  void runHostInjectionOverlapGuard(api, config).catch((error) => {
+    api.logger?.warn?.(`native-memory-citations host-injection overlap guard failed open: ${String(error)}`);
+  });
+}
+
 export function registerEnhancedLifecycle(api: PluginApiLike): void {
   const config = api.pluginConfig ?? {};
   if (modeFromConfig(config) !== "enhanced") {
     return;
   }
 
-  void runDreamingGuard(api, config).catch((error) => {
-    api.logger?.warn?.(`native-memory-citations dreaming guard failed open: ${String(error)}`);
-  });
+  runEnhancedGuards(api, config);
   registerHook(api, "cron_changed", () => {
-    void runDreamingGuard(api, config).catch((error) => {
-      api.logger?.warn?.(`native-memory-citations dreaming guard failed open: ${String(error)}`);
-    });
+    runEnhancedGuards(api, config);
   }, hookOptions(100, 3000));
 
   if (requiresSnapshot(config)) {
@@ -185,9 +213,11 @@ export function registerEnhancedLifecycle(api: PluginApiLike): void {
 
 export const enhancedLifecycleForTest = {
   DREAMING_NOTICE,
+  HOST_INJECTION_OVERLAP_NOTICE,
   OBSERVATION_EXTRACTION_NOTICE,
   PLUGIN_ID,
   buildSnapshot,
   emitObservationUnavailable,
   runDreamingGuard,
+  runHostInjectionOverlapGuard,
 };

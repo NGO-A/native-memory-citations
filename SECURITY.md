@@ -36,6 +36,28 @@ determines what may be read, and redaction applied to what is returned.
 - Redaction does not modify source memory files and does not affect citation hashes,
   which are computed from the original file text.
 
+### Scope of redaction — plugin surfaces only
+
+The plugin redacts content on the surfaces it controls: search, fetch, and answer
+returns; graph citations; and its enhanced snapshot injection. It cannot inspect,
+transform, or suppress memory content that OpenClaw injects independently through
+the host's workspace-bootstrap path.
+
+On OpenClaw hosts where native workspace context injection is enabled, raw memory
+file content reaches the model context and trajectory diagnostics through that host
+path regardless of this plugin's redaction. Installing or enabling this plugin does
+not extend its redaction guarantee to those host-controlled surfaces. Operators who
+store secret-shaped content in memory files must use the host's own controls or set
+`agents.defaults.contextInjection: "never"` (and ensure no per-agent override
+re-enables it) to disable host-native raw injection.
+
+Trajectory diagnostic logs produced while host-native injection is enabled can
+contain raw memory content. Their access, retention, export, and deletion policies
+must therefore be treated as secret-handling controls. In enhanced mode, the
+`native-memory-citations/host-injection-overlap` health finding and matching warning
+make a detectable overlap between plugin snapshot injection and the host path
+visible; they do not redact or block the host path.
+
 ### Citation integrity
 
 Full-file SHA-256 hashes accompany results so callers can detect when a previous
