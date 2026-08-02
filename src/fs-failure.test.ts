@@ -44,6 +44,16 @@ afterEach(() => {
 });
 
 describe("filesystem failure injection", () => {
+  it("serializes concurrent atomic replacements of the same sidecar", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "nmc-concurrent-replace-"));
+    const file = path.join(root, "sidecar.json");
+    const replacements = Array.from({ length: 8 }, (_, index) => `replacement-${index}\n`);
+
+    await Promise.all(replacements.map((content) => atomicWriteText(file, content)));
+
+    expect(replacements).toContain(await actualReadFile(file, "utf8"));
+  });
+
   it("keeps the original sidecar intact on ENOSPC before rename", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "nmc-enospc-"));
     const file = path.join(root, "sidecar.json");

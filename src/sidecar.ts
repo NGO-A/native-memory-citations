@@ -9,6 +9,7 @@ type FormatHeader = {
 };
 
 let temporarySequence = 0;
+const writeQueues = new Map<string, Promise<void>>();
 
 function isHeader(value: unknown): value is FormatHeader {
   return Boolean(
@@ -20,36 +21,53 @@ function isHeader(value: unknown): value is FormatHeader {
 }
 
 export async function atomicWriteText(file: string, content: string): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true });
+  const queueKey = path.resolve(file);
+  const previous = writeQueues.get(queueKey) ?? Promise.resolve();
+  let release!: () => void;
+  const turn = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.then(() => turn);
+  writeQueues.set(queueKey, queued);
+  await previous;
+
   temporarySequence += 1;
   const temporary = `${file}.${process.pid}.${Date.now()}.${temporarySequence}.tmp`;
   const backup = `${temporary}.previous`;
   let movedOriginal = false;
   try {
-    await writeFile(temporary, content, "utf8");
-    if (process.platform === "win32") {
-      await rename(file, backup).then(() => {
-        movedOriginal = true;
-      }).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== "ENOENT") {
-          throw error;
-        }
-      });
-    }
+    await mkdir(path.dirname(file), { recursive: true });
     try {
-      await rename(temporary, file);
-    } catch (error) {
-      if (movedOriginal) {
-        await rename(backup, file).catch(() => undefined);
+      await writeFile(temporary, content, "utf8");
+      if (process.platform === "win32") {
+        await rename(file, backup).then(() => {
+          movedOriginal = true;
+        }).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") {
+            throw error;
+          }
+        });
       }
+      try {
+        await rename(temporary, file);
+      } catch (error) {
+        if (movedOriginal) {
+          await rename(backup, file).catch(() => undefined);
+        }
+        throw error;
+      }
+      if (movedOriginal) {
+        await unlink(backup).catch(() => undefined);
+      }
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined);
       throw error;
     }
-    if (movedOriginal) {
-      await unlink(backup).catch(() => undefined);
+  } finally {
+    release();
+    if (writeQueues.get(queueKey) === queued) {
+      writeQueues.delete(queueKey);
     }
-  } catch (error) {
-    await unlink(temporary).catch(() => undefined);
-    throw error;
   }
 }
 
