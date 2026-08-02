@@ -1,7 +1,8 @@
-import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { readJsonLines, writeJsonLines } from "./sidecar.js";
 
 export type PluginConfig = {
   workspace?: string;
@@ -38,6 +39,17 @@ export type PluginConfig = {
   };
 };
 
+export type OpenClawConfigLike = {
+  memory?: { dreaming?: { enabled?: boolean } };
+  plugins?: {
+    entries?: Record<string, {
+      config?: {
+        dreaming?: { enabled?: boolean };
+      };
+    } | unknown>;
+  };
+};
+
 export type GraphEdgeType = "works_at" | "invested_in" | "founded" | "advises" | "attended" | "mentions";
 
 export type GraphEdge = {
@@ -54,12 +66,14 @@ export type GraphExtractResult = {
   mode: "bounded" | "enhanced";
   graphPath: string;
   edgeCount: number;
+  capped?: boolean;
+  cappedLines?: number;
   skipped?: string;
 };
 
 export type GraphPath = {
   nodes: string[];
-  edges: GraphEdge[];
+  edges: Array<GraphEdge & { direction: "forward" | "reverse" }>;
 };
 
 export type GraphQueryResult = {
@@ -69,6 +83,7 @@ export type GraphQueryResult = {
   maxDepth: number;
   edgeCount: number;
   paths: GraphPath[];
+  skippedLines?: number;
   skipped?: string;
 };
 
@@ -82,6 +97,15 @@ export type SearchHit = {
   matchLine: number;
   matchText: string;
   sha256: string;
+  truncated?: boolean;
+};
+
+export type SearchResult = {
+  hits: SearchHit[];
+  skippedFiles: number;
+  capped?: boolean;
+  degraded?: boolean;
+  degradedReason?: string;
 };
 
 export type FetchResult = {
@@ -94,6 +118,7 @@ export type FetchResult = {
   sha256: string;
   stale?: boolean;
   staleMessage?: string;
+  truncated?: boolean;
 };
 
 export type AnswerResult = {
@@ -125,7 +150,7 @@ type GraphEdgeAccumulator = {
   order: number;
 };
 
-const DEFAULT_PRIVATE_ROOTS = ["memory", "MEMORY.md", "USER.md", "IDENTITY.md", "TOOLS.md"];
+const DEFAULT_PRIVATE_ROOTS = ["memory", "MEMORY.md", "DREAMS.md", "USER.md", "IDENTITY.md", "TOOLS.md"];
 const DEFAULT_SHARED_ROOTS = ["memory", "USER.md", "IDENTITY.md", "TOOLS.md"];
 const TEXT_EXTENSIONS = new Set([".md", ".txt", ".json", ".jsonl", ".yaml", ".yml"]);
 const GRAPH_ENTITY_STOPWORDS = new Set([
@@ -208,7 +233,7 @@ const GRAPH_ENTITY_STOPWORDS = new Set([
 const ANSWER_MIN_SCORE = 3;
 const ANSWER_MIN_TERM_RATIO = 0.5;
 const MAX_REGION_LINES = 25;
-const FILE_CACHE_MAX = 512;
+const DEFAULT_FILE_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
 const MAX_LINE_CHARS = 2000;
 const MAX_SNIPPET_CHARS = 4000;
 const DEFAULT_FETCH_CHARS = 8000;
@@ -229,6 +254,8 @@ const MAX_GRAPH_LINE_CHARS = 4096;
 const SCAN_CONCURRENCY = 8;
 const HIGH_ENTROPY_TOKEN_MIN_LENGTH = 24;
 const HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR = 4;
+const HEX_TOKEN_MIN_LENGTH = 32;
+const HEX_TOKEN_MIN_BITS_PER_CHAR = 3.4;
 const DEFAULT_GRAPH_EDGE_TYPES: GraphEdgeType[] = ["works_at", "invested_in", "founded", "advises", "attended", "mentions"];
 const GRAPH_EXTRACTED_AT = "1970-01-01T00:00:00.000Z";
 const STOPWORDS = new Set([
@@ -286,7 +313,9 @@ const STOPWORDS = new Set([
 export type LoadedFile = {
   mtimeMs: number;
   size: number;
-  rawText: string;
+  ctimeMs: number;
+  ino: number;
+  cacheBytes: number;
   rawLines: string[];
   redactedLines: string[];
   sha256: string;
@@ -298,6 +327,13 @@ export type AuthorizedMemoryFile = {
 };
 type InternalSearchHit = SearchHit & { rawSnippet: string; rawMatchText: string };
 const fileCache = new Map<string, LoadedFile>();
+let fileCacheBytes = 0;
+let fileCacheBudgetBytes = DEFAULT_FILE_CACHE_BUDGET_BYTES;
+let fileDiskLoads = 0;
+let cacheEnvelopeFinding: { files: number; bytes: number } | undefined;
+type FileStatTuple = Pick<Awaited<ReturnType<typeof stat>>, "mtimeMs" | "size" | "ctimeMs" | "ino">;
+type GraphCacheEntry = FileStatTuple & { edges: GraphEdge[]; skippedLines: number };
+const graphCache = new Map<string, GraphCacheEntry>();
 
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
   const n = Math.floor(value ?? fallback);
@@ -339,8 +375,21 @@ export function graphEnabled(config: PluginConfig = {}): boolean {
   return isEnhancedMode(config) && config.graph?.enabled === true;
 }
 
-function graphPath(config: PluginConfig = {}): string {
+export function graphPath(config: PluginConfig = {}): string {
   return path.join(workspaceFromConfig(config), "memory", "graph.jsonl");
+}
+
+export function memoryDreamingEnabled(cfg: unknown): boolean {
+  const record = cfg as OpenClawConfigLike;
+  if (record.memory?.dreaming?.enabled === true) {
+    return true;
+  }
+  const memoryCore = record.plugins?.entries?.["memory-core"];
+  return Boolean(
+    memoryCore
+    && typeof memoryCore === "object"
+    && (memoryCore as { config?: { dreaming?: { enabled?: boolean } } }).config?.dreaming?.enabled === true,
+  );
 }
 
 function enabledGraphEdgeTypes(config: PluginConfig = {}): Set<GraphEdgeType> {
@@ -372,6 +421,11 @@ export function allowedRoots(config: PluginConfig = {}): string[] {
   });
 }
 
+export function isSourceWithinAllowedRoots(config: PluginConfig, sourceId: string): boolean {
+  const target = path.resolve(workspaceFromConfig(config), sourceId);
+  return within(target, allowedRoots(config));
+}
+
 function within(target: string, roots: string[]): boolean {
   return roots.some((root) => target === root || target.startsWith(`${root}${path.sep}`));
 }
@@ -383,8 +437,15 @@ async function realpathOrSelf(p: string): Promise<string> {
 // A configured/default root must not resolve, via symlink, outside the workspace.
 // Fail closed instead of silently dropping a root, which could mask a bad config.
 async function realRootsWithinWorkspace(config: PluginConfig): Promise<string[]> {
-  const realWorkspace = await realpathOrSelf(workspaceFromConfig(config));
-  const realRoots = await Promise.all(allowedRoots(config).map(realpathOrSelf));
+  const workspace = workspaceFromConfig(config);
+  const realWorkspace = await realpathOrSelf(workspace);
+  const realRoots = await Promise.all(allowedRoots(config).map((root) => {
+    // Rebase missing default roots (for example DREAMS.md) onto the canonical
+    // workspace path before resolving them. On macOS /var may canonicalize to
+    // /private/var, and Windows may canonicalize drive-letter casing.
+    const canonicalCandidate = path.resolve(realWorkspace, path.relative(workspace, root));
+    return realpathOrSelf(canonicalCandidate);
+  }));
   for (const realRoot of realRoots) {
     if (!within(realRoot, [realWorkspace])) {
       throw new Error(
@@ -411,6 +472,35 @@ export async function toSafePath(config: PluginConfig, requested: string): Promi
   }
 
   return resolved;
+}
+
+async function nearestExistingParent(target: string): Promise<string> {
+  let candidate = target;
+  while (true) {
+    try {
+      return await realpath(candidate);
+    } catch {
+      const parent = path.dirname(candidate);
+      if (parent === candidate) {
+        throw new Error(`native-memory-citations: cannot resolve write parent for ${target}`);
+      }
+      candidate = parent;
+    }
+  }
+}
+
+export async function toSafeWritePath(config: PluginConfig, requested: string): Promise<string> {
+  const workspace = workspaceFromConfig(config);
+  const target = path.resolve(workspace, requested);
+  if (!within(target, [workspace])) {
+    throw new Error(`Write path is outside the workspace: ${requested}`);
+  }
+  const realWorkspace = await realpathOrSelf(workspace);
+  const realParent = await nearestExistingParent(path.dirname(target));
+  if (!within(realParent, [realWorkspace])) {
+    throw new Error(`Write path resolves via symlink outside the workspace: ${requested}`);
+  }
+  return target;
 }
 
 export function sourceIdForPath(config: PluginConfig, absolutePath: string): string {
@@ -455,11 +545,14 @@ function shannonEntropy(value: string): number {
 }
 
 function redactHighEntropyTokens(line: string): string {
-  return line.replace(/[A-Za-z0-9_+=-]{24,}/g, (token) => {
-    if (
-      token.length >= HIGH_ENTROPY_TOKEN_MIN_LENGTH
-      && shannonEntropy(token) >= HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR
-    ) {
+  return line.replace(/[A-Za-z0-9_+/=-]{24,}/g, (token) => {
+    if (/^\d+$/.test(token) || /^[a-z0-9._-]+(?:\/[a-z0-9._-]+){2,}$/.test(token)) {
+      return token;
+    }
+    const isHex = /^[0-9a-f]+$/i.test(token);
+    const minimumLength = isHex ? HEX_TOKEN_MIN_LENGTH : HIGH_ENTROPY_TOKEN_MIN_LENGTH;
+    const minimumEntropy = isHex ? HEX_TOKEN_MIN_BITS_PER_CHAR : HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR;
+    if (token.length >= minimumLength && shannonEntropy(token) >= minimumEntropy) {
       return "[REDACTED_HIGH_ENTROPY]";
     }
     return token;
@@ -483,7 +576,7 @@ function redactSingleLineSecrets(line: string): string {
     .replace(/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_JWT]")
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):[^\s:@/]+@/gi, "$1:[REDACTED]@")
     .replace(
-      /\b([A-Za-z0-9_.-]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|CLIENT[_-]?SECRET)[A-Za-z0-9_.-]*\s*[:=]\s*)([^\s"'`]+|"[^"\n]+"|'[^'\n]+')/gi,
+      /\b([A-Za-z0-9_.-]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|PWD|CREDENTIAL|AUTH|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET)[A-Za-z0-9_.-]*\s*[:=]\s*)([^\s"'`]+|"[^"\n]+"|'[^'\n]+')/gi,
       "$1[REDACTED]",
     ));
 }
@@ -556,6 +649,7 @@ function publicHit(hit: InternalSearchHit): SearchHit {
     matchLine: hit.matchLine,
     matchText: hit.matchText,
     sha256: hit.sha256,
+    ...(hit.truncated ? { truncated: true } : {}),
   };
 }
 
@@ -593,7 +687,8 @@ async function collectFiles(root: string, logger?: MemoryLogger): Promise<string
   return files;
 }
 
-function terms(query: string): string[] {
+function termsWithSignal(query: string): { values: string[]; capped: boolean } {
+  let capped = query.length > MAX_QUERY_CHARS;
   const bounded = query.length > MAX_QUERY_CHARS
     ? `${query.slice(0, MAX_QUERY_CHARS / 2)} ${query.slice(-(MAX_QUERY_CHARS / 2))}`
     : query;
@@ -607,11 +702,16 @@ function terms(query: string): string[] {
     ),
   );
   if (unique.length <= MAX_QUERY_TERMS) {
-    return unique;
+    return { values: unique, capped };
   }
   // Pathological query: keep the most selective (longest) terms so the cap costs
   // the least recall. Only reached above the cap, so normal queries are untouched.
-  return [...unique].sort((a, b) => b.length - a.length).slice(0, MAX_QUERY_TERMS);
+  capped = true;
+  return { values: [...unique].sort((a, b) => b.length - a.length).slice(0, MAX_QUERY_TERMS), capped };
+}
+
+function terms(query: string): string[] {
+  return termsWithSignal(query).values;
 }
 
 function escapeRegExp(s: string): string {
@@ -642,42 +742,82 @@ function scoreLine(line: string, matchers: Matcher[]): number {
   return score;
 }
 
-async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogger): Promise<LoadedFile | null> {
+type ScanDiagnostics = { skippedFiles: number; scannedCacheBytes?: number };
+
+function deleteCachedFile(file: string): void {
+  const cached = fileCache.get(file);
+  if (cached) {
+    fileCacheBytes -= cached.cacheBytes;
+    fileCache.delete(file);
+  }
+}
+
+async function loadFile(
+  file: string,
+  maxFileBytes: number,
+  logger?: MemoryLogger,
+  diagnostics?: ScanDiagnostics,
+): Promise<LoadedFile | null> {
   const info = await stat(file).catch(() => null);
   if (!info || !info.isFile()) {
-    fileCache.delete(file);
+    deleteCachedFile(file);
     return null;
   }
   if (info.size > maxFileBytes) {
-    fileCache.delete(file);
+    deleteCachedFile(file);
     logger?.warn?.(`native-memory-citations: skipped oversized file: ${file}`);
+    if (diagnostics) diagnostics.skippedFiles += 1;
     return null;
   }
   const cached = fileCache.get(file);
-  if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) {
+  if (
+    cached
+    && cached.mtimeMs === info.mtimeMs
+    && cached.size === info.size
+    && cached.ctimeMs === info.ctimeMs
+    && cached.ino === info.ino
+  ) {
     fileCache.delete(file);
     fileCache.set(file, cached);
     return cached;
   }
-  const rawText = await readFile(file, "utf8").catch(() => "");
+  const rawText = await readFile(file, "utf8").catch((error) => {
+    logger?.debug?.(`native-memory-citations: skipped unreadable file ${file}: ${String(error)}`);
+    if (diagnostics) diagnostics.skippedFiles += 1;
+    return "";
+  });
   if (!rawText.trim()) {
-    fileCache.delete(file);
+    deleteCachedFile(file);
     return null;
   }
+  fileDiskLoads += 1;
   const rawLines = rawText.split(/\r?\n/g);
+  const redactedLines = buildRedactedLines(rawLines);
+  const cacheBytes = Buffer.byteLength(rawLines.join("\n"), "utf8")
+    + Buffer.byteLength(redactedLines.join("\n"), "utf8");
   const loaded = {
     mtimeMs: info.mtimeMs,
     size: info.size,
-    rawText,
+    ctimeMs: info.ctimeMs,
+    ino: info.ino,
+    cacheBytes,
     rawLines,
-    redactedLines: buildRedactedLines(rawLines),
+    redactedLines,
     sha256: sha256Text(rawText),
   };
+  const replaced = fileCache.get(file);
+  if (replaced) {
+    fileCacheBytes -= replaced.cacheBytes;
+  }
   fileCache.set(file, loaded);
-  if (fileCache.size > FILE_CACHE_MAX) {
+  fileCacheBytes += loaded.cacheBytes;
+  while (fileCacheBytes > fileCacheBudgetBytes) {
     const oldest = fileCache.keys().next().value;
     if (oldest !== undefined) {
+      fileCacheBytes -= fileCache.get(oldest)?.cacheBytes ?? 0;
       fileCache.delete(oldest);
+    } else {
+      break;
     }
   }
   return loaded;
@@ -685,7 +825,7 @@ async function loadFile(file: string, maxFileBytes: number, logger?: MemoryLogge
 
 export async function authorizedMemoryFiles(
   config: PluginConfig = {},
-  options: { logger?: MemoryLogger; includeDerivedArtifacts?: boolean } = {},
+  options: { logger?: MemoryLogger; includeDerivedArtifacts?: boolean; diagnostics?: ScanDiagnostics } = {},
 ): Promise<AuthorizedMemoryFile[]> {
   const fileSizeLimit = maxFileBytes(config);
   await realRootsWithinWorkspace(config);
@@ -702,12 +842,19 @@ export async function authorizedMemoryFiles(
     if (!options.includeDerivedArtifacts && isDerivedMemoryArtifact(config, file)) {
       continue;
     }
-    const loaded = await loadFile(file, fileSizeLimit, options.logger);
+    const loaded = await loadFile(file, fileSizeLimit, options.logger, options.diagnostics);
     if (!loaded) {
       continue;
     }
     authorized.push({ absolutePath: file, sourceId, loaded });
   }
+  const scannedCacheBytes = authorized.reduce((sum, file) => sum + file.loaded.cacheBytes, 0);
+  if (options.diagnostics) {
+    options.diagnostics.scannedCacheBytes = scannedCacheBytes;
+  }
+  cacheEnvelopeFinding = scannedCacheBytes > fileCacheBudgetBytes
+    ? { files: authorized.length, bytes: scannedCacheBytes }
+    : undefined;
   return authorized;
 }
 
@@ -767,17 +914,19 @@ async function searchMemoryInternal(
     signal?: AbortSignal;
     logger?: MemoryLogger;
   } = {},
-): Promise<InternalSearchHit[]> {
+): Promise<{ hits: InternalSearchHit[]; skippedFiles: number; capped: boolean; degraded: boolean }> {
   const config = options.config ?? {};
-  const queryTerms = terms(query);
+  const querySignal = termsWithSignal(query);
+  const queryTerms = querySignal.values;
   options.signal?.throwIfAborted();
   const matchers = buildMatchers(queryTerms);
   if (matchers.length === 0) {
-    return [];
+    return { hits: [], skippedFiles: 0, capped: querySignal.capped, degraded: false };
   }
   const limit = clampInt(options.limit, 8, 1, 50);
   const contextLines = clampInt(options.contextLines, 2, 0, 8);
-  const files = await authorizedMemoryFiles(config, { logger: options.logger });
+  const diagnostics: ScanDiagnostics = { skippedFiles: 0, scannedCacheBytes: 0 };
+  const files = await authorizedMemoryFiles(config, { logger: options.logger, diagnostics });
 
   const hits: InternalSearchHit[] = [];
   for (let i = 0; i < files.length; i += SCAN_CONCURRENCY) {
@@ -802,12 +951,12 @@ async function searchMemoryInternal(
       }
       const sourceId = file.sourceId;
       return mergeRegions(matches, contextLines, rawLines.length).map((region) => {
-        const rawSnippet = rawLines.slice(region.start, region.end + 1).join("\n").slice(0, MAX_SNIPPET_CHARS).trim();
-        const redactedSnippet = redactedLines
+        const rawSnippetFull = rawLines.slice(region.start, region.end + 1).join("\n");
+        const redactedSnippetFull = redactedLines
           .slice(region.start, region.end + 1)
-          .join("\n")
-          .slice(0, MAX_SNIPPET_CHARS)
-          .trim();
+          .join("\n");
+        const rawSnippet = rawSnippetFull.slice(0, MAX_SNIPPET_CHARS).trim();
+        const redactedSnippet = redactedSnippetFull.slice(0, MAX_SNIPPET_CHARS).trim();
         const distinctTerms = matchedTermCount(rawSnippet, matchers);
         const rawMatchText = (rawLines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim();
         return {
@@ -820,6 +969,9 @@ async function searchMemoryInternal(
           matchLine: region.anchorIndex + 1,
           matchText: (redactedLines[region.anchorIndex] ?? "").slice(0, MAX_LINE_CHARS).trim(),
           sha256,
+          ...(rawSnippetFull.length > MAX_SNIPPET_CHARS || redactedSnippetFull.length > MAX_SNIPPET_CHARS
+            ? { truncated: true }
+            : {}),
           rawSnippet,
           rawMatchText,
         } satisfies InternalSearchHit;
@@ -830,12 +982,54 @@ async function searchMemoryInternal(
     }
   }
 
-  const sortedHits = hits
-    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.lineStart - b.lineStart)
-    .slice(0, limit);
+  const allSortedHits = hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.lineStart - b.lineStart);
+  const sortedHits = allSortedHits.slice(0, limit);
   options.logger?.debug?.(`native-memory-citations: scanned ${files.length} files, returned ${sortedHits.length} hits`);
-  return sortedHits;
+  return {
+    hits: sortedHits,
+    skippedFiles: diagnostics.skippedFiles,
+    capped: querySignal.capped || allSortedHits.length > limit,
+    degraded: (diagnostics.scannedCacheBytes ?? 0) > fileCacheBudgetBytes,
+  };
 }
+
+export async function searchMemoryDetailed(
+  query: string,
+  options: Parameters<typeof searchMemoryInternal>[1] = {},
+): Promise<SearchResult> {
+  const result = await searchMemoryInternal(query, options);
+  return {
+    hits: result.hits.map(publicHit),
+    skippedFiles: result.skippedFiles,
+    ...(result.capped ? { capped: true } : {}),
+    ...(result.degraded
+      ? {
+          degraded: true,
+          degradedReason: `authorized corpus exceeds the ${fileCacheBudgetBytes}-byte cache budget`,
+        }
+      : {}),
+  };
+}
+
+export function cacheEnvelopeHealthState(): { files: number; bytes: number; budgetBytes: number } | undefined {
+  return cacheEnvelopeFinding ? { ...cacheEnvelopeFinding, budgetBytes: fileCacheBudgetBytes } : undefined;
+}
+
+export const fileCacheForTest = {
+  reset(): void {
+    fileCache.clear();
+    fileCacheBytes = 0;
+    fileCacheBudgetBytes = DEFAULT_FILE_CACHE_BUDGET_BYTES;
+    fileDiskLoads = 0;
+    cacheEnvelopeFinding = undefined;
+  },
+  setBudget(bytes: number): void {
+    fileCacheBudgetBytes = bytes;
+  },
+  stats(): { entries: number; bytes: number; diskLoads: number; budgetBytes: number } {
+    return { entries: fileCache.size, bytes: fileCacheBytes, diskLoads: fileDiskLoads, budgetBytes: fileCacheBudgetBytes };
+  },
+};
 
 export async function searchMemory(
   query: string,
@@ -847,7 +1041,7 @@ export async function searchMemory(
     logger?: MemoryLogger;
   } = {},
 ): Promise<SearchHit[]> {
-  return (await searchMemoryInternal(query, options)).map(publicHit);
+  return (await searchMemoryInternal(query, options)).hits.map(publicHit);
 }
 
 function compareText(a: string, b: string): number {
@@ -1045,6 +1239,17 @@ const CORPUS_GRAPH_RELATION_RE =
   /\b(?:approved(?: using)?|available|configured|confirmed|contains|created|enabled|generates|has|installed|lives|mounted|passed|prefers|published|reachable|registered|registers|requires|routes|run|runs|stored|supports|use|uses|verified|under|via|plus)\b/giu;
 const CORPUS_GRAPH_CLASS_PHRASE_RE =
   /\b(?:(?:native|local|private|public|canonical|shared|subordinate|strong|big|cheap|safe|scriptable|configured)\s+)?[A-Z][\w@.+-]*(?:\s+[A-Z0-9][\w@.+-]*){0,5}\s+(?:access|address|addresses|artifact|benchmark|candidate|CLI|factory|hub|model|node|package|plan|plugin|project|repo|route|router|setup|skill|skills|stack|storage|tool|tools|voice|workspace|workflow|worker)\b/gu;
+const GRAPH_PROPER_NOUN = "([A-Z][\\w@.+-]*(?:\\s+[A-Z][\\w@.+-]*){0,5})";
+const GRAPH_AFTER_SOURCE = "\\s*[`\"'“”‘’)\\]}]*\\s+";
+const GRAPH_TARGET = "([^.;\\n]{2,120})";
+const GRAPH_EDGE_PATTERNS: ReadonlyArray<{ type: GraphEdgeType; re: RegExp }> = [
+  { type: "works_at", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:works|worked)\\s+(?:at|for)\\s+${GRAPH_TARGET}`) },
+  { type: "invested_in", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:invested in|backs|backed)\\s+${GRAPH_TARGET}`) },
+  { type: "founded", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:founded|co-founded)\\s+${GRAPH_TARGET}`) },
+  { type: "advises", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:advises|advised|mentors|mentor(?:ed)?)\\s+${GRAPH_TARGET}`) },
+  { type: "attended", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:attended|went to)\\s+${GRAPH_TARGET}`) },
+  { type: "mentions", re: new RegExp(`${GRAPH_PROPER_NOUN}${GRAPH_AFTER_SOURCE}(?:mentions|mentioned|discusses|discussed)\\s+${GRAPH_TARGET}`) },
+];
 
 function graphColonParts(line: string): { subject: string; body: string } | null {
   const match = line.match(/^(.{2,90}?):\s+(.{4,})$/u);
@@ -1130,18 +1335,7 @@ function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: numb
   if (/^(?:Candidate|\d{1,2}:\d{2}\s+(?:MDT|UTC)):/u.test(cleaned)) {
     return;
   }
-  const properNoun = "([A-Z][\\w@.+-]*(?:\\s+[A-Z][\\w@.+-]*){0,5})";
-  const afterSource = "\\s*[`\"'“”‘’)\\]}]*\\s+";
-  const target = "([^.;\\n]{2,120})";
-  const patterns: Array<{ type: GraphEdgeType; re: RegExp }> = [
-    { type: "works_at", re: new RegExp(`${properNoun}${afterSource}(?:works|worked)\\s+(?:at|for)\\s+${target}`) },
-    { type: "invested_in", re: new RegExp(`${properNoun}${afterSource}(?:invested in|backs|backed)\\s+${target}`) },
-    { type: "founded", re: new RegExp(`${properNoun}${afterSource}(?:founded|co-founded)\\s+${target}`) },
-    { type: "advises", re: new RegExp(`${properNoun}${afterSource}(?:advises|advised|mentors|mentor(?:ed)?)\\s+${target}`) },
-    { type: "attended", re: new RegExp(`${properNoun}${afterSource}(?:attended|went to)\\s+${target}`) },
-    { type: "mentions", re: new RegExp(`${properNoun}${afterSource}(?:mentions|mentioned|discusses|discussed)\\s+${target}`) },
-  ];
-  for (const pattern of patterns) {
+  for (const pattern of GRAPH_EDGE_PATTERNS) {
     if (!allowedTypes.has(pattern.type)) {
       continue;
     }
@@ -1153,17 +1347,34 @@ function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: numb
   addCorpusMentionEdgesFromColonLine(cleaned, sourceFile, sourceLine, allowedTypes, accumulator);
 }
 
-async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {
-  const text = await readFile(graphPath(config), "utf8").catch(() => "");
-  if (!text.trim()) {
-    return [];
+async function readGraphEdges(
+  config: PluginConfig,
+  logger?: MemoryLogger,
+): Promise<{ edges: GraphEdge[]; skippedLines: number }> {
+  const file = graphPath(config);
+  const info = await stat(file).catch(() => null);
+  if (!info?.isFile()) {
+    graphCache.delete(file);
+    return { edges: [], skippedLines: 0 };
   }
+  const cached = graphCache.get(file);
+  if (
+    cached
+    && cached.mtimeMs === info.mtimeMs
+    && cached.size === info.size
+    && cached.ctimeMs === info.ctimeMs
+    && cached.ino === info.ino
+  ) {
+    return { edges: cached.edges, skippedLines: cached.skippedLines };
+  }
+  const sidecar = await readJsonLines<Partial<GraphEdge>>(
+    file,
+    "native-memory-citations/graph",
+    1,
+    { warn: (message) => logger?.warn?.(message) },
+  );
   const edges: GraphEdge[] = [];
-  for (const line of text.split(/\r?\n/g)) {
-    if (!line.trim()) {
-      continue;
-    }
-    const parsed = JSON.parse(line) as Partial<GraphEdge>;
+  for (const parsed of sidecar.entries) {
     if (
       typeof parsed.from === "string"
       && DEFAULT_GRAPH_EDGE_TYPES.includes(parsed.type as GraphEdgeType)
@@ -1179,7 +1390,15 @@ async function readGraphEdges(config: PluginConfig): Promise<GraphEdge[]> {
       });
     }
   }
-  return edges;
+  graphCache.set(file, {
+    mtimeMs: info.mtimeMs,
+    size: info.size,
+    ctimeMs: info.ctimeMs,
+    ino: info.ino,
+    edges,
+    skippedLines: sidecar.skippedLines,
+  });
+  return { edges, skippedLines: sidecar.skippedLines };
 }
 
 export async function extractMemoryGraph(
@@ -1201,10 +1420,14 @@ export async function extractMemoryGraph(
   const allowedTypes = enabledGraphEdgeTypes(config);
   const files = await authorizedMemoryFiles(config, { logger: options.logger });
   const accumulator = createGraphEdgeAccumulator();
+  let cappedLines = 0;
   for (const file of files) {
     const loaded = file.loaded;
     const sourceFile = file.sourceId;
     loaded.rawLines.forEach((line, index) => {
+      if (line.length > MAX_GRAPH_LINE_CHARS) {
+        cappedLines += 1;
+      }
       extractEdgesFromLine(line, sourceFile, index + 1, allowedTypes, accumulator);
     });
   }
@@ -1217,24 +1440,31 @@ export async function extractMemoryGraph(
       || compareText(a.sourceFile, b.sourceFile)
       || a.sourceLine - b.sourceLine,
   );
-  const file = graphPath(config);
-  await mkdir(path.dirname(file), { recursive: true });
+  const file = await toSafeWritePath(config, sourceIdForPath(config, graphPath(config)));
   const persistedEdges = edges.map((edge) => ({
     ...edge,
     from: redactMemoryText(edge.from),
     to: redactMemoryText(edge.to),
   }));
-  await writeFile(
+  await writeJsonLines(
     file,
-    `${persistedEdges.map((edge) => JSON.stringify(edge)).join("\n")}${persistedEdges.length ? "\n" : ""}`,
-    "utf8",
+    "native-memory-citations/graph",
+    1,
+    persistedEdges,
   );
-  return { enabled: true, mode, graphPath: target, edgeCount: persistedEdges.length };
+  graphCache.delete(file);
+  return {
+    enabled: true,
+    mode,
+    graphPath: target,
+    edgeCount: persistedEdges.length,
+    ...(cappedLines > 0 ? { capped: true, cappedLines } : {}),
+  };
 }
 
 export async function queryMemoryGraph(
   query: string,
-  options: { maxDepth?: number; config?: PluginConfig } = {},
+  options: { maxDepth?: number; config?: PluginConfig; logger?: MemoryLogger } = {},
 ): Promise<GraphQueryResult> {
   const config = options.config ?? {};
   const mode = modeFromConfig(config);
@@ -1250,7 +1480,7 @@ export async function queryMemoryGraph(
       skipped: mode === "enhanced" ? "graph.enabled is false" : "mode is bounded",
     };
   }
-  const edges = await readGraphEdges(config);
+  const { edges, skippedLines } = await readGraphEdges(config, options.logger);
   const q = normalizeEntity(query).toLowerCase();
   const starts = new Set<string>();
   for (const edge of edges) {
@@ -1259,17 +1489,24 @@ export async function queryMemoryGraph(
       starts.add(edge.to);
     }
   }
-  const adjacency = new Map<string, GraphEdge[]>();
+  type AdjacencyEntry = { edge: GraphEdge; direction: "forward" | "reverse"; next: string };
+  const adjacency = new Map<string, AdjacencyEntry[]>();
   for (const edge of edges) {
-    adjacency.set(edge.from, [...(adjacency.get(edge.from) ?? []), edge]);
-    adjacency.set(edge.to, [...(adjacency.get(edge.to) ?? []), { ...edge, from: edge.to, to: edge.from }]);
+    const forward = adjacency.get(edge.from) ?? [];
+    forward.push({ edge, direction: "forward", next: edge.to });
+    adjacency.set(edge.from, forward);
+    const reverse = adjacency.get(edge.to) ?? [];
+    reverse.push({ edge, direction: "reverse", next: edge.from });
+    adjacency.set(edge.to, reverse);
   }
 
   const paths: GraphPath[] = [];
   const queue: GraphPath[] = Array.from(starts).sort().map((node) => ({ nodes: [node], edges: [] }));
   const seenPaths = new Set<string>();
-  while (queue.length > 0 && paths.length < 50) {
-    const current = queue.shift()!;
+  let queueIndex = 0;
+  while (queueIndex < queue.length && paths.length < 50) {
+    const current = queue[queueIndex]!;
+    queueIndex += 1;
     if (current.edges.length > 0) {
       const key = current.nodes.join("\0");
       if (!seenPaths.has(key)) {
@@ -1281,14 +1518,25 @@ export async function queryMemoryGraph(
       continue;
     }
     const last = current.nodes[current.nodes.length - 1] ?? "";
-    for (const edge of adjacency.get(last) ?? []) {
-      if (current.nodes.includes(edge.to)) {
+    for (const entry of adjacency.get(last) ?? []) {
+      if (current.nodes.includes(entry.next)) {
         continue;
       }
-      queue.push({ nodes: [...current.nodes, edge.to], edges: [...current.edges, edge] });
+      queue.push({
+        nodes: [...current.nodes, entry.next],
+        edges: [...current.edges, { ...entry.edge, direction: entry.direction }],
+      });
     }
   }
-  return { enabled: true, mode, query, maxDepth, edgeCount: edges.length, paths };
+  return {
+    enabled: true,
+    mode,
+    query,
+    maxDepth,
+    edgeCount: edges.length,
+    paths,
+    ...(skippedLines > 0 ? { skippedLines } : {}),
+  };
 }
 
 export async function fetchMemorySource(
@@ -1327,10 +1575,17 @@ export async function fetchMemorySource(
     throw new Error(`Path is not a readable memory file: ${sourceId}`);
   }
   const { rawLines, redactedLines, sha256 } = loaded;
+  const requestedLineStart = Math.floor(input.lineStart ?? 1);
+  if (Number.isFinite(requestedLineStart) && requestedLineStart > rawLines.length) {
+    throw new Error(
+      `Requested lineStart ${requestedLineStart} exceeds ${sourceId} line count ${rawLines.length}`,
+    );
+  }
   const lineStart = clampInt(input.lineStart, 1, 1, rawLines.length);
   const lineEnd = clampInt(input.lineEnd, rawLines.length, lineStart, rawLines.length);
   const maxChars = clampInt(input.maxChars, DEFAULT_FETCH_CHARS, 256, MAX_FETCH_CHARS);
-  const content = redactedLines.slice(lineStart - 1, lineEnd).join("\n").slice(0, maxChars);
+  const fullContent = redactedLines.slice(lineStart - 1, lineEnd).join("\n");
+  const content = fullContent.slice(0, maxChars);
   const expectedSha256 = input.expectedSha256?.trim().toLowerCase();
   const stale = Boolean(expectedSha256 && expectedSha256 !== sha256);
   return {
@@ -1341,6 +1596,7 @@ export async function fetchMemorySource(
     citation: `${sourceId}:${lineStart}`,
     content,
     sha256,
+    ...(fullContent.length > maxChars ? { truncated: true } : {}),
     ...(stale
       ? {
           stale: true,
@@ -1383,7 +1639,7 @@ export async function answerFromMemory(
 ): Promise<AnswerResult> {
   const queryTerms = terms(query);
   const matchers = buildMatchers(queryTerms);
-  const hits = await searchMemoryInternal(query, {
+  const { hits } = await searchMemoryInternal(query, {
     limit: options.limit ?? 6,
     contextLines: 2,
     config: options.config,
@@ -1412,7 +1668,8 @@ export async function answerFromMemory(
   }
 
   const points: string[] = [];
-  for (const hit of supportingHits.slice(0, 1)) {
+  const hit = supportingHits[0];
+  if (hit) {
     const sentences = extractSentences(hit.snippet, matchers);
     const text = hit.matchText || sentences[0] || hit.snippet.split(/\n+/g).find(Boolean) || "";
     if (text.trim()) {

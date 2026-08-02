@@ -1,10 +1,11 @@
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { enhancedLifecycleForTest } from "./enhanced.js";
-import plugin from "./index.js";
+import plugin, { filteredRegistrationApi } from "./index.js";
+import { droppedUnknownRegistrationCount, resetRegistrationStateForTest } from "./registration-state.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const manifestPath = path.resolve(here, "..", "openclaw.plugin.json");
@@ -150,6 +151,31 @@ describe("plugin manifest contract", () => {
     );
   });
 
+  it("drops unknown registration shapes in bounded mode and warns", () => {
+    resetRegistrationStateForTest();
+    const registered: unknown[] = [];
+    const warnings: string[] = [];
+    const api = {
+      registerTool(tool: unknown) { registered.push(tool); },
+      logger: { debug() {}, info() {}, warn(message: string) { warnings.push(message); }, error() {} },
+    };
+    const bounded = filteredRegistrationApi(api as never, true);
+    bounded.registerTool({ tool: { name: "future_tool" } } as never);
+
+    expect(registered).toHaveLength(0);
+    expect(warnings.join("\n")).toContain("dropped an unrecognized tool registration shape");
+    expect(droppedUnknownRegistrationCount()).toBe(1);
+  });
+
+  it("passes unknown registration shapes through in enhanced mode", () => {
+    const registered: unknown[] = [];
+    const api = { registerTool(tool: unknown) { registered.push(tool); } };
+    const enhanced = filteredRegistrationApi(api as never, false);
+    const futureShape = { tool: { name: "future_tool" } };
+    enhanced.registerTool(futureShape as never);
+    expect(registered).toEqual([futureShape]);
+  });
+
   it("registers enhanced hooks only when enhanced pillars are enabled", async () => {
     const workspace = await fixtureWorkspace();
     const bounded = registeredPluginSurface(workspace, {
@@ -197,7 +223,10 @@ describe("plugin manifest contract", () => {
 
     const searchResult = await searchTool?.execute("call-search", { query: "harness neutral" });
     expect(searchResult).toMatchObject({
-      details: [expect.objectContaining({ sourceId: "MEMORY.md" })],
+      details: {
+        hits: [expect.objectContaining({ sourceId: "MEMORY.md" })],
+        skippedFiles: 0,
+      },
     });
     const fetchResult = await fetchTool?.execute("call-fetch", { sourceId: "MEMORY.md" });
     expect(fetchResult).toMatchObject({
@@ -279,12 +308,77 @@ describe("plugin manifest contract", () => {
 
     const snapshotPath = path.join(workspace, "memory", ".native-memory-citations", "snapshot.json");
     const snapshot = await readFile(snapshotPath, "utf8");
+    expect(JSON.parse(snapshot)).toMatchObject({
+      format: "native-memory-citations/snapshot",
+      version: 1,
+    });
     expect(snapshot).toContain("[REDACTED_OPENAI_KEY]");
     expect(snapshot).not.toContain(secret);
 
     const injected = await handlers.get("before_prompt_build")?.({}, {}) as { prependContext?: string } | undefined;
     expect(injected?.prependContext).toContain("[REDACTED_OPENAI_KEY]");
     expect(injected?.prependContext).not.toContain(secret);
+  });
+
+  it("redacts a secret before slicing across the snapshot cap", async () => {
+    const workspace = await fixtureWorkspace();
+    const secret = "BoundarySecretValueABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+    const capChars = 1300 * 4;
+    const headingChars = "## MEMORY.md\n".length;
+    const filler = "x".repeat(capChars - headingChars - 10);
+    await writeFile(path.join(workspace, "MEMORY.md"), `${filler} ${secret}\n`);
+
+    await enhancedLifecycleForTest.buildSnapshot({
+      workspace,
+      mode: "enhanced",
+      injection: { enabled: true, tokenCap: 1300 },
+    }, undefined);
+    const snapshot = await readFile(
+      path.join(workspace, "memory", ".native-memory-citations", "snapshot.json"),
+      "utf8",
+    );
+    for (let length = 8; length <= secret.length; length += 1) {
+      expect(snapshot).not.toContain(secret.slice(0, length));
+    }
+  });
+
+  it("ignores a corrupt enhanced snapshot and warns", async () => {
+    const workspace = await fixtureWorkspace();
+    const snapshotPath = path.join(workspace, "memory", ".native-memory-citations", "snapshot.json");
+    await mkdir(path.dirname(snapshotPath), { recursive: true });
+    await writeFile(snapshotPath, "{not valid json", "utf8");
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+    const warnings: string[] = [];
+    plugin.register({
+      pluginConfig: { workspace, mode: "enhanced", injection: { enabled: true } },
+      registerTool() {},
+      on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+        handlers.set(event, handler);
+      },
+      logger: { debug() {}, info() {}, warn(message: string) { warnings.push(message); }, error() {} },
+    } as never);
+
+    await expect(handlers.get("before_prompt_build")?.({}, {})).resolves.toBeUndefined();
+    expect(warnings.join("\n")).toContain("ignored corrupt enhanced snapshot");
+  });
+
+  it("refuses snapshot writes through a workspace-escaping memory symlink", async () => {
+    const workspace = await fixtureWorkspace();
+    const external = await mkdtemp(path.join(tmpdir(), "native-memory-citations-snapshot-external-"));
+    await mkdir(path.join(workspace, "notes"), { recursive: true });
+    await rm(path.join(workspace, "memory"), { recursive: true, force: true });
+    await symlink(external, path.join(workspace, "memory"), "dir");
+    const config = {
+      workspace,
+      mode: "enhanced" as const,
+      allowedRoots: ["notes"],
+      injection: { enabled: true },
+    };
+
+    await expect(enhancedLifecycleForTest.buildSnapshot(config, undefined)).rejects.toThrow(
+      /Write path resolves via symlink outside/,
+    );
+    await expect(readFile(path.join(external, ".native-memory-citations", "snapshot.json"), "utf8")).rejects.toThrow();
   });
 
   it("builds enhanced snapshots only from allowed memory roots", async () => {
@@ -304,6 +398,21 @@ describe("plugin manifest contract", () => {
     expect(snapshot).not.toContain("private snapshot token");
     expect(snapshot).not.toContain("dream snapshot token");
     expect(snapshot).not.toContain("allowed user token");
+  });
+
+  it("includes DREAMS.md in the private default snapshot scope", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "DREAMS.md"), "default dream snapshot marker\n");
+    const handlers = registeredHookHandlers(workspace, {
+      mode: "enhanced",
+      injection: { enabled: true },
+    });
+    await handlers.get("session_start")?.({}, {});
+    const snapshot = await readFile(
+      path.join(workspace, "memory", ".native-memory-citations", "snapshot.json"),
+      "utf8",
+    );
+    expect(snapshot).toContain("default dream snapshot marker");
   });
 
   it("honors sharedMode for enhanced snapshots", async () => {
@@ -356,7 +465,7 @@ describe("plugin manifest contract", () => {
     expect(searchTool).toBeTruthy();
     const result = await searchTool?.execute("call-1", { query: "native memory citation plugin" });
     expect(result).toMatchObject({
-      details: [],
+      details: { hits: [], skippedFiles: 0 },
     });
   });
 

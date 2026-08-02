@@ -53,10 +53,14 @@
     "plugin:build:check": "npm run build && openclaw plugins build --entry ./dist/index.js --check",
     "plugin:validate": "npm run plugin:build && openclaw plugins validate --entry ./dist/index.js",
     "test": "vitest run --dir src --no-file-parallelism",
+    "test:typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test:coverage": "vitest run --dir src --no-file-parallelism --coverage",
+    "test:pack": "node scripts/tarball-smoke.mjs",
     "test:stress": "vitest run src/bounded-invariants.test.ts src/stress-soak.test.ts --no-file-parallelism"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",
+    "@vitest/coverage-v8": "3.2.6",
     "openclaw": "2026.6.9",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"

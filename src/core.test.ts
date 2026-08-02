@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,8 +8,11 @@ import {
   authorizedMemoryFiles,
   extractMemoryGraph,
   fetchMemorySource,
+  fileCacheForTest,
+  cacheEnvelopeHealthState,
   queryMemoryGraph,
   searchMemory,
+  searchMemoryDetailed,
   toSafePath,
 } from "./core.js";
 
@@ -60,10 +63,28 @@ function expectNoRawValue(serialized: string, rawValue: string): void {
 }
 
 function parseGraphJsonl(text: string): Array<Record<string, unknown>> {
-  return text.trim().split(/\r?\n/g).filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
+  return text.trim().split(/\r?\n/g).filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((entry) => entry.format === undefined);
 }
 
 describe("native memory citations core", () => {
+  it("accepts missing default roots when the workspace path canonicalizes through a symlink", async () => {
+    const realWorkspace = await fixtureWorkspace();
+    const aliasParent = await mkdtemp(path.join(tmpdir(), "native-memory-citations-alias-"));
+    const workspaceAlias = path.join(aliasParent, "workspace");
+    await symlink(realWorkspace, workspaceAlias, process.platform === "win32" ? "junction" : "dir");
+
+    const hits = await searchMemory("native memory citation plugin", {
+      config: { workspace: workspaceAlias },
+      limit: 3,
+    });
+
+    expect(hits[0]?.path).toBe("memory/2026-06-16.md");
+    await rm(aliasParent, { recursive: true, force: true });
+    await rm(realWorkspace, { recursive: true, force: true });
+  });
+
   it("searches memory with line citations", async () => {
     const workspace = await fixtureWorkspace();
     const hits = await searchMemory("native memory citation plugin", { config: { workspace }, limit: 3 });
@@ -139,6 +160,10 @@ describe("native memory citations core", () => {
     const edges = parseGraphJsonl(firstText);
 
     expect(first.edgeCount).toBe(5);
+    expect(JSON.parse(firstText.split(/\r?\n/g)[0]!) as Record<string, unknown>).toEqual({
+      format: "native-memory-citations/graph",
+      version: 1,
+    });
     expect(second.edgeCount).toBe(first.edgeCount);
     expect(secondText).toBe(firstText);
     expect(edges).toEqual([
@@ -262,6 +287,67 @@ describe("native memory citations core", () => {
     }
   });
 
+  it("preserves stored edge orientation during reverse traversal", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "reverse-query.md"), "Alice works at Acme.\n");
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    await extractMemoryGraph(config);
+
+    const result = await queryMemoryGraph("Acme", { config, maxDepth: 1 });
+    const reverseEdge = result.paths
+      .flatMap((graphPath) => graphPath.edges)
+      .find((edge) => edge.direction === "reverse");
+
+    expect(reverseEdge).toMatchObject({
+      from: "Alice",
+      type: "works_at",
+      to: "Acme",
+      direction: "reverse",
+    });
+    expect(result.paths.flatMap((graphPath) => graphPath.edges)).not.toContainEqual(
+      expect.objectContaining({ from: "Acme", type: "works_at", to: "Alice" }),
+    );
+  });
+
+  it("invalidates the graph cache after the sidecar changes", async () => {
+    const workspace = await fixtureWorkspace();
+    const file = path.join(workspace, "memory", "graph.jsonl");
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    const edge = (from: string, to: string) => JSON.stringify({
+      from,
+      type: "works_at",
+      to,
+      sourceFile: "memory/source.md",
+      sourceLine: 1,
+      extractedAt: "1970-01-01T00:00:00.000Z",
+    });
+    await writeFile(file, `${edge("Alice", "Acme")}\n`);
+    expect((await queryMemoryGraph("Acme", { config })).edgeCount).toBe(1);
+
+    await writeFile(file, `${edge("Alice", "Acme")}\n${edge("Bob", "Beta")}\n`);
+    const refreshed = await queryMemoryGraph("Beta", { config });
+    expect(refreshed.edgeCount).toBe(2);
+    expect(JSON.stringify(refreshed.paths)).toContain("Bob");
+  });
+
+  it("supports parallel graph extracts and a query during replacement", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "parallel.md"), "Alice works at Acme.\n");
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    await extractMemoryGraph(config);
+    const [first, second, query] = await Promise.all([
+      extractMemoryGraph(config),
+      extractMemoryGraph(config),
+      queryMemoryGraph("Acme", { config }),
+    ]);
+    expect(first.edgeCount).toBe(1);
+    expect(second.edgeCount).toBe(1);
+    expect(query.paths.length).toBeGreaterThan(0);
+    const persisted = await readFile(path.join(workspace, "memory", "graph.jsonl"), "utf8");
+    expect(persisted).toContain("native-memory-citations/graph");
+    expect(parseGraphJsonl(persisted)).toHaveLength(1);
+  });
+
   it("extractMemoryGraph redacts secret-shaped labels before persistence", async () => {
     const workspace = await fixtureWorkspace();
     const rawSecret = "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
@@ -323,6 +409,58 @@ describe("native memory citations core", () => {
     expect(serialized).toContain("OPENAI_API_KEY=[REDACTED]");
     expect(serialized).not.toContain(rawSecret);
     expect(serialized).not.toContain("sk-proj-abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("skips corrupt graph lines and reports the count", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "graph.jsonl"),
+      [
+        JSON.stringify({ format: "native-memory-citations/graph", version: 1 }),
+        "{not valid json",
+        JSON.stringify({
+          from: "Alice",
+          type: "works_at",
+          to: "Acme",
+          sourceFile: "memory/source.md",
+          sourceLine: 1,
+          extractedAt: "1970-01-01T00:00:00.000Z",
+        }),
+      ].join("\n"),
+    );
+    const warnings: string[] = [];
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    const result = await queryMemoryGraph("Acme", { config, logger: { warn: (message) => warnings.push(message) } });
+    expect(result.edgeCount).toBe(1);
+    expect(result.skippedLines).toBe(1);
+    expect(warnings.join("\n")).toContain("skipped corrupt");
+  });
+
+  it("refuses graph sidecars from an unknown future version", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(
+      path.join(workspace, "memory", "graph.jsonl"),
+      `${JSON.stringify({ format: "native-memory-citations/graph", version: 2 })}\n`,
+    );
+    const config = { workspace, mode: "enhanced" as const, graph: { enabled: true } };
+    await expect(queryMemoryGraph("Acme", { config })).rejects.toThrow(/Unsupported .* version 2/);
+  });
+
+  it("refuses graph writes through a workspace-escaping memory symlink", async () => {
+    const workspace = await fixtureWorkspace();
+    const external = await mkdtemp(path.join(tmpdir(), "native-memory-citations-write-external-"));
+    await mkdir(path.join(workspace, "notes"), { recursive: true });
+    await writeFile(path.join(workspace, "notes", "graph.md"), "Alice works at Acme.\n");
+    await rm(path.join(workspace, "memory"), { recursive: true, force: true });
+    await symlink(external, path.join(workspace, "memory"), "dir");
+    const config = {
+      workspace,
+      mode: "enhanced" as const,
+      allowedRoots: ["notes"],
+      graph: { enabled: true },
+    };
+    await expect(extractMemoryGraph(config)).rejects.toThrow(/Write path resolves via symlink outside/);
+    await expect(readFile(path.join(external, "graph.jsonl"), "utf8")).rejects.toThrow();
   });
 
   it("hashes the complete searched file content", async () => {
@@ -497,16 +635,12 @@ describe("native memory citations core", () => {
     expect(result.staleMessage).toBeUndefined();
   });
 
-  it("fetches by filePath and clamps ranges", async () => {
+  it("rejects an out-of-range fetch start with the actual line count", async () => {
     const workspace = await fixtureWorkspace();
-    const result = await fetchMemorySource(
+    await expect(fetchMemorySource(
       { filePath: "memory/2026-06-16.md", lineStart: 99, lineEnd: 2 },
       { workspace },
-    );
-    expect(result.lineStart).toBe(5);
-    expect(result.lineEnd).toBe(5);
-    expect(result.citation).toBe("memory/2026-06-16.md:5");
-    expect(result.content).toContain("native_memory_answer");
+    )).rejects.toThrow(/lineStart 99.*line count 5/);
   });
 
   it("normalizes non-finite fetch line ranges", async () => {
@@ -529,6 +663,7 @@ describe("native memory citations core", () => {
       { workspace },
     );
     expect(result.content).toHaveLength(256);
+    expect(result.truncated).toBe(true);
   });
 
   it("rejects hidden files and directories during fetch", async () => {
@@ -1045,6 +1180,10 @@ describe("native memory citations core", () => {
     });
     expect(hits).toHaveLength(0);
     expect(warnings.some((message) => message.includes("skipped oversized file"))).toBe(true);
+    const detailed = await searchMemoryDetailed("oversized-token", {
+      config: { workspace, maxFileBytes: 1024 },
+    });
+    expect(detailed.skippedFiles).toBe(1);
   });
 
   it("orders higher scoring files first", async () => {
@@ -1066,12 +1205,87 @@ describe("native memory citations core", () => {
     expect(freshHits[0]?.matchText).toContain("fresh-cache-token");
   });
 
+  it("refreshes cached content after a same-size replacement with preserved mtime", async () => {
+    fileCacheForTest.reset();
+    const workspace = await fixtureWorkspace();
+    const file = path.join(workspace, "memory", "same-size.md");
+    await writeFile(file, "old-cache-token\n");
+    expect(await searchMemory("old-cache-token", { config: { workspace }, contextLines: 0 })).toHaveLength(1);
+    const before = await stat(file);
+    const replacement = path.join(workspace, "memory", "same-size-replacement.md");
+    await writeFile(replacement, "new-cache-token\n");
+    await utimes(replacement, before.atime, before.mtime);
+    await rename(replacement, file);
+
+    const fresh = await searchMemory("new-cache-token", { config: { workspace }, contextLines: 0 });
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]?.matchText).toContain("new-cache-token");
+  });
+
+  it("evicts file cache entries by byte budget in LRU order", async () => {
+    fileCacheForTest.reset();
+    fileCacheForTest.setBudget(2500);
+    const workspace = await fixtureWorkspace();
+    for (const name of ["a", "b", "c"]) {
+      await writeFile(path.join(workspace, `${name}.md`), `${name}-cache-marker ${"x".repeat(550)}\n`);
+    }
+    await searchMemory("a-cache-marker", { config: { workspace, allowedRoots: ["a.md"] } });
+    await searchMemory("b-cache-marker", { config: { workspace, allowedRoots: ["b.md"] } });
+    await searchMemory("a-cache-marker", { config: { workspace, allowedRoots: ["a.md"] } });
+    await searchMemory("c-cache-marker", { config: { workspace, allowedRoots: ["c.md"] } });
+    const before = fileCacheForTest.stats().diskLoads;
+    await searchMemory("a-cache-marker", { config: { workspace, allowedRoots: ["a.md"] } });
+    expect(fileCacheForTest.stats().diskLoads).toBe(before);
+    await searchMemory("b-cache-marker", { config: { workspace, allowedRoots: ["b.md"] } });
+    expect(fileCacheForTest.stats().diskLoads).toBe(before + 1);
+    fileCacheForTest.reset();
+  });
+
+  it("does not re-read a 513-file corpus on a second unchanged query", async () => {
+    fileCacheForTest.reset();
+    const workspace = await fixtureWorkspace();
+    await Promise.all(Array.from({ length: 513 }, (_value, index) =>
+      writeFile(path.join(workspace, "memory", `cliff-${index}.md`), `cliffmarker ${index}\n`)));
+    await searchMemory("cliffmarker", { config: { workspace }, limit: 1 });
+    const firstLoads = fileCacheForTest.stats().diskLoads;
+    await searchMemory("cliffmarker", { config: { workspace }, limit: 1 });
+    const secondLoads = fileCacheForTest.stats().diskLoads - firstLoads;
+    expect(firstLoads).toBe(515);
+    expect(secondLoads).toBe(0);
+    fileCacheForTest.reset();
+  });
+
+  it("signals a scan that exceeds the cache byte budget", async () => {
+    fileCacheForTest.reset();
+    fileCacheForTest.setBudget(1024);
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "large-local.md"), `envelopemarker ${"x".repeat(700)}\n`);
+    const result = await searchMemoryDetailed("envelopemarker", {
+      config: { workspace, allowedRoots: ["large-local.md"] },
+    });
+    expect(result.degraded).toBe(true);
+    expect(result.degradedReason).toContain("1024-byte cache budget");
+    expect(cacheEnvelopeHealthState()).toMatchObject({ files: 1, budgetBytes: 1024 });
+    fileCacheForTest.reset();
+  });
+
   it("caps search snippets and match lines", async () => {
     const workspace = await fixtureWorkspace();
     await writeFile(path.join(workspace, "memory", "long-line.md"), `longlinetoken ${"x".repeat(6000)}\n`);
     const hits = await searchMemory("longlinetoken", { config: { workspace }, contextLines: 0 });
     expect(hits[0]?.snippet.length).toBeLessThanOrEqual(4000);
     expect(hits[0]?.matchText.length).toBeLessThanOrEqual(2000);
+    expect(hits[0]?.truncated).toBe(true);
+  });
+
+  it("signals bounded query terms and result limits", async () => {
+    const workspace = await fixtureWorkspace();
+    await writeFile(path.join(workspace, "memory", "cap-a.md"), "selectivecapmarker alpha\n");
+    await writeFile(path.join(workspace, "memory", "cap-b.md"), "selectivecapmarker beta\n");
+    const oversizedQuery = `${"q".repeat(5000)} selectivecapmarker`;
+    const result = await searchMemoryDetailed(oversizedQuery, { config: { workspace }, limit: 1 });
+    expect(result.capped).toBe(true);
+    expect(result.hits).toHaveLength(1);
   });
 
   it("honors an already-aborted search signal", async () => {

@@ -213,9 +213,14 @@ describe.each(BOUNDED_CONFIGS)("bounded-mode invariants: %s", (_name, config) =>
     const fetchTool = toolByName(registeredTools, "native_memory_fetch");
     const answerTool = toolByName(registeredTools, "native_memory_answer");
 
-    const searchResult = await searchTool.execute("call-search", { query: "alpha" }) as { details?: Array<{ sourceId?: string }> };
-    const hit = searchResult.details?.[0];
+    const searchResult = await searchTool.execute("call-search", { query: "alpha" }) as {
+      details?: { hits?: Array<{ sourceId?: string }> };
+    };
+    const hit = searchResult.details?.hits?.[0];
     expect(hit?.sourceId).toBe("memory/note.md");
+    if (!hit?.sourceId) {
+      throw new Error("native_memory_search did not return the expected source");
+    }
 
     await searchTool.execute("call-search-second", { query: "native memory", contextLines: 1 });
     await fetchTool.execute("call-fetch", { sourceId: hit.sourceId, lineStart: 1, lineEnd: 4 });

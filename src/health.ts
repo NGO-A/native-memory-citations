@@ -2,7 +2,19 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerHealthCheck, type HealthFinding } from "openclaw/plugin-sdk/health";
-import { authorizedMemoryFiles, graphEnabled, modeFromConfig, sourceIdForPath, type PluginConfig, workspaceFromConfig } from "./core.js";
+import {
+  authorizedMemoryFiles,
+  cacheEnvelopeHealthState,
+  graphEnabled,
+  graphPath,
+  isSourceWithinAllowedRoots,
+  memoryDreamingEnabled,
+  modeFromConfig,
+  type OpenClawConfigLike,
+  sourceIdForPath,
+  type PluginConfig,
+} from "./core.js";
+import { droppedUnknownRegistrationCount } from "./registration-state.js";
 
 const PLUGIN_ID = "native-memory-citations";
 const EXPECTED_TOOLS = [
@@ -15,27 +27,8 @@ const EXPECTED_TOOLS = [
 
 let registered = false;
 
-type OpenClawLikeConfig = {
-  memory?: { dreaming?: { enabled?: boolean } };
-  plugins?: {
-    entries?: Record<string, unknown>;
-  };
-};
-
-function memoryDreamingEnabled(cfg: unknown): boolean {
-  const record = cfg as OpenClawLikeConfig;
-  if (record.memory?.dreaming?.enabled === true) {
-    return true;
-  }
-  const memoryCore = record.plugins?.entries?.["memory-core"];
-  if (memoryCore && typeof memoryCore === "object") {
-    return (memoryCore as { config?: { dreaming?: { enabled?: boolean } } }).config?.dreaming?.enabled === true;
-  }
-  return false;
-}
-
 function pluginConfigFromOpenClawConfig(cfg: unknown): PluginConfig {
-  const record = cfg as OpenClawLikeConfig;
+  const record = cfg as OpenClawConfigLike;
   const entry = record.plugins?.entries?.[PLUGIN_ID];
   if (entry && typeof entry === "object") {
     const maybeConfig = (entry as { config?: unknown }).config;
@@ -66,6 +59,67 @@ export function registerNativeMemoryHealthChecks(): void {
     return;
   }
   registered = true;
+
+  registerHealthCheck({
+    id: "native-memory-citations/default-memory-scope",
+    kind: "plugin",
+    source: PLUGIN_ID,
+    description: "Explicit allowedRoots do not accidentally remove MEMORY.md from private recall.",
+    async detect(ctx) {
+      const config = pluginConfigFromOpenClawConfig(ctx.cfg);
+      if (!config.allowedRoots?.length || config.sharedMode || isSourceWithinAllowedRoots(config, "MEMORY.md")) {
+        return [];
+      }
+      return [{
+        checkId: "native-memory-citations/default-memory-scope",
+        severity: "warning",
+        message: "Explicit allowedRoots excludes MEMORY.md from the authorized memory scope.",
+        source: PLUGIN_ID,
+        ocPath: `plugins.entries.${PLUGIN_ID}.config.allowedRoots`,
+        fixHint: "Add MEMORY.md explicitly if private long-term memory should remain searchable; allowedRoots replaces the defaults.",
+      }];
+    },
+  });
+
+  registerHealthCheck({
+    id: "native-memory-citations/cache-envelope",
+    kind: "plugin",
+    source: PLUGIN_ID,
+    description: "Authorized memory scans remain within the documented local cache envelope.",
+    async detect() {
+      const state = cacheEnvelopeHealthState();
+      if (!state) {
+        return [];
+      }
+      return [{
+        checkId: "native-memory-citations/cache-envelope",
+        severity: "warning",
+        message: `Authorized memory scan loaded ${state.files} files / ${state.bytes} bytes, exceeding the ${state.budgetBytes}-byte cache budget.`,
+        source: PLUGIN_ID,
+        fixHint: "Reduce the bounded local corpus to <=500 files / <=50 MB or review the scan-based scaling decision.",
+      }];
+    },
+  });
+
+  registerHealthCheck({
+    id: "native-memory-citations/registration-shape",
+    kind: "plugin",
+    source: PLUGIN_ID,
+    description: "Bounded mode rejects tool registration shapes it cannot positively identify.",
+    async detect() {
+      const dropped = droppedUnknownRegistrationCount();
+      if (dropped === 0) {
+        return [];
+      }
+      return [{
+        checkId: "native-memory-citations/registration-shape",
+        severity: "warning",
+        message: `Bounded mode dropped ${dropped} unrecognized tool registration shape(s).`,
+        source: PLUGIN_ID,
+        fixHint: "Update native-memory-citations for the current OpenClaw SDK registration shape before enabling new tools.",
+      }];
+    },
+  });
 
   registerHealthCheck({
     id: "native-memory-citations/manifest-tools",
@@ -122,16 +176,15 @@ export function registerNativeMemoryHealthChecks(): void {
       if (!graphEnabled(config)) {
         return [];
       }
-      const workspace = workspaceFromConfig(config);
-      const graphPath = path.join(workspace, "memory", "graph.jsonl");
-      const graphInfo = await stat(graphPath).catch(() => null);
+      const file = graphPath(config);
+      const graphInfo = await stat(file).catch(() => null);
       if (!graphInfo?.isFile()) {
         return [{
           checkId: "native-memory-citations/graph-fresh",
           severity: "warning",
           message: "Enhanced graph mode is enabled but memory/graph.jsonl does not exist yet.",
           source: PLUGIN_ID,
-          path: graphPath,
+          path: file,
           fixHint: "Run native_memory_extract to build the graph sidecar.",
         }];
       }
@@ -144,7 +197,7 @@ export function registerNativeMemoryHealthChecks(): void {
           severity: "warning",
           message: "memory/graph.jsonl is older than at least one memory source file.",
           source: PLUGIN_ID,
-          path: graphPath,
+          path: file,
           fixHint: "Run native_memory_extract to refresh the graph sidecar.",
         });
       }

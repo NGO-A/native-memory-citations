@@ -6,10 +6,11 @@ import {
   modeFromConfig,
   type PluginConfig,
   queryMemoryGraph,
-  searchMemory,
+  searchMemoryDetailed,
 } from "./core.js";
 import { registerEnhancedLifecycle } from "./enhanced.js";
 import { registerNativeMemoryHealthChecks } from "./health.js";
+import { recordDroppedUnknownRegistration } from "./registration-state.js";
 
 registerNativeMemoryHealthChecks();
 
@@ -128,7 +129,7 @@ const plugin = defineToolPlugin({
           contextLines?: number;
         };
         context.signal?.throwIfAborted();
-        return searchMemory(query, {
+        return searchMemoryDetailed(query, {
           limit,
           contextLines,
           config: config as PluginConfig,
@@ -185,7 +186,7 @@ const plugin = defineToolPlugin({
       execute: async (input, config, context) => {
         const { query, maxDepth } = input as { query: string; maxDepth?: number };
         context.signal?.throwIfAborted();
-        return queryMemoryGraph(query, { maxDepth, config: config as PluginConfig });
+        return queryMemoryGraph(query, { maxDepth, config: config as PluginConfig, logger: context.api.logger });
       },
     }),
     tool({
@@ -204,22 +205,40 @@ const plugin = defineToolPlugin({
 
 const registerAllTools = plugin.register.bind(plugin);
 
-plugin.register = (api: Parameters<typeof plugin.register>[0]) => {
-  const boundedMode = modeFromConfig(api.pluginConfig) === "bounded";
-  const filteredApi = {
+type PluginRegisterApi = Parameters<typeof plugin.register>[0];
+type RegisterToolDefinition = Parameters<PluginRegisterApi["registerTool"]>[0];
+type RegisterToolOptions = Parameters<PluginRegisterApi["registerTool"]>[1];
+
+export function filteredRegistrationApi(api: PluginRegisterApi, boundedMode: boolean): PluginRegisterApi {
+  return {
     ...api,
-    registerTool(toolDefinition: unknown, options?: { name?: string; optional?: boolean }) {
+    registerTool(toolDefinition: RegisterToolDefinition, options?: RegisterToolOptions) {
       const name = typeof toolDefinition === "function"
         ? options?.name
         : (toolDefinition as { name?: string } | null | undefined)?.name;
-      if (boundedMode && name && ENHANCED_TOOL_NAMES.has(name)) {
-        return;
+      if (boundedMode) {
+        if (typeof name !== "string" || !name) {
+          api.logger?.warn?.(
+            "native-memory-citations: dropped an unrecognized tool registration shape in bounded mode",
+          );
+          recordDroppedUnknownRegistration();
+          return;
+        }
+        if (ENHANCED_TOOL_NAMES.has(name)) {
+          return;
+        }
       }
-      return api.registerTool(toolDefinition as never, options as never);
+      return api.registerTool(toolDefinition, options);
     },
   };
-  const result = registerAllTools(filteredApi as never);
-  registerEnhancedLifecycle(api as never);
+}
+
+plugin.register = (api: PluginRegisterApi) => {
+  const boundedMode = modeFromConfig(api.pluginConfig) === "bounded";
+  const result = registerAllTools(filteredRegistrationApi(api, boundedMode));
+  // OpenClaw's host config type does not yet expose memory-core dreaming fields;
+  // enhanced.ts narrows only the runtime members it reads at this SDK seam.
+  registerEnhancedLifecycle(api as unknown as Parameters<typeof registerEnhancedLifecycle>[0]);
   return result;
 };
 
