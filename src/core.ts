@@ -215,6 +215,17 @@ const DEFAULT_FETCH_CHARS = 8000;
 const MAX_FETCH_CHARS = 20000;
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const MAX_REDACTION_LINE_CHARS = 8192;
+// Bound the per-request search cost. A query is tokenized into at most
+// MAX_QUERY_TERMS matchers, each of which is evaluated against every scanned
+// line, so an unbounded term count multiplies work by corpus size. Normal
+// queries fall far below these caps and are unaffected.
+const MAX_QUERY_CHARS = 4096;
+const MAX_QUERY_TERMS = 64;
+// Fail closed on oversized lines in the deterministic graph extractor, mirroring
+// MAX_REDACTION_LINE_CHARS. The extraction regexes are linear but uncapped; a
+// single very long line would otherwise scale extraction cost to the file-size
+// cap with no abort signal. Typed relationships never require lines this long.
+const MAX_GRAPH_LINE_CHARS = 4096;
 const SCAN_CONCURRENCY = 8;
 const HIGH_ENTROPY_TOKEN_MIN_LENGTH = 24;
 const HIGH_ENTROPY_TOKEN_MIN_BITS_PER_CHAR = 4;
@@ -499,15 +510,37 @@ function buildRedactedLines(rawLines: string[]): string[] {
     }
   }
 
-  for (let j = 0; j < rawLines.length; j += 1) {
-    if (isEndMarker(rawLines[j] ?? "") && !mask[j]) {
-      let k = j;
-      while (k >= 0 && (rawLines[k] ?? "").trim() !== "") {
+  // Redact stray END markers that have no matching BEGIN. For each maximal run
+  // of non-blank lines, redact from the run start through the LAST unmatched END
+  // marker in that run. This single forward scan is O(n) and is exactly
+  // equivalent to redacting backward from every unmatched END marker to the
+  // nearest preceding blank line (the union of those backward spans, per run, is
+  // [runStart .. lastUnmatchedEnd]). The previous backward-scan-per-marker form
+  // was O(n^2) on inputs with many stray END markers in one non-blank run.
+  let runStart = -1;
+  let lastOrphanEnd = -1;
+  const closeRun = (): void => {
+    if (runStart >= 0 && lastOrphanEnd >= 0) {
+      for (let k = runStart; k <= lastOrphanEnd; k += 1) {
         mask[k] = true;
-        k -= 1;
       }
     }
+    runStart = -1;
+    lastOrphanEnd = -1;
+  };
+  for (let j = 0; j < rawLines.length; j += 1) {
+    if ((rawLines[j] ?? "").trim() === "") {
+      closeRun();
+      continue;
+    }
+    if (runStart < 0) {
+      runStart = j;
+    }
+    if (isEndMarker(rawLines[j] ?? "") && !mask[j]) {
+      lastOrphanEnd = j;
+    }
   }
+  closeRun();
 
   return rawLines.map((line, index) => mask[index] ? "[REDACTED_PRIVATE_KEY]" : redactSingleLineSecrets(line));
 }
@@ -561,15 +594,24 @@ async function collectFiles(root: string, logger?: MemoryLogger): Promise<string
 }
 
 function terms(query: string): string[] {
-  return Array.from(
+  const bounded = query.length > MAX_QUERY_CHARS
+    ? `${query.slice(0, MAX_QUERY_CHARS / 2)} ${query.slice(-(MAX_QUERY_CHARS / 2))}`
+    : query;
+  const unique = Array.from(
     new Set(
-      query
+      bounded
         .toLowerCase()
         .split(/[^a-z0-9_@.+-]+/g)
         .map((term) => term.trim())
         .filter((term) => term.length >= 2 && !STOPWORDS.has(term)),
     ),
   );
+  if (unique.length <= MAX_QUERY_TERMS) {
+    return unique;
+  }
+  // Pathological query: keep the most selective (longest) terms so the cap costs
+  // the least recall. Only reached above the cap, so normal queries are untouched.
+  return [...unique].sort((a, b) => b.length - a.length).slice(0, MAX_QUERY_TERMS);
 }
 
 function escapeRegExp(s: string): string {
@@ -1081,6 +1123,9 @@ function addCorpusMentionEdgesFromColonLine(
 }
 
 function extractEdgesFromLine(line: string, sourceFile: string, sourceLine: number, allowedTypes: Set<GraphEdgeType>, accumulator: GraphEdgeAccumulator): void {
+  if (line.length > MAX_GRAPH_LINE_CHARS) {
+    return;
+  }
   const cleaned = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim();
   if (/^(?:Candidate|\d{1,2}:\d{2}\s+(?:MDT|UTC)):/u.test(cleaned)) {
     return;
